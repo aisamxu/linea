@@ -128,6 +128,41 @@ final class EditorIntegrationTests: XCTestCase {
         XCTAssertEqual(editor.currentSelections().count, 2)
     }
 
+    func testSixtyCursorsKeepSelectionsAcrossConsecutiveInput() throws {
+        let lineCount = 60
+        let lines = (1...lineCount).map { "Line \($0)" }
+        let text = lines.joined(separator: "\n")
+        var selections: [NSRange] = []
+        var location = 0
+        for line in lines {
+            selections.append(NSRange(location: location, length: 0))
+            location += (line as NSString).length + 1
+        }
+
+        let editor = EditorViewController(
+            document: makeDocument(),
+            text: text,
+            selections: selections
+        )
+        let undo = try XCTUnwrap(editor.textView.undoManager)
+        undo.groupsByEvent = false
+
+        performInsertion("X", in: editor, undo: undo)
+        XCTAssertEqual(editor.currentSelections().count, lineCount)
+
+        performInsertion("Y", in: editor, undo: undo)
+        XCTAssertEqual(editor.currentSelections().count, lineCount)
+        XCTAssertEqual(
+            editor.textView.text?.components(separatedBy: "\n").count,
+            lineCount
+        )
+
+        undo.undo()
+        spinMainRunLoop()
+        XCTAssertEqual(editor.textView.text, text)
+        XCTAssertEqual(editor.currentSelections().count, lineCount)
+    }
+
     func testBackspaceDeletesAtEveryCaretAndUndoRestores() throws {
         let editor = EditorViewController(
             document: makeDocument(),
