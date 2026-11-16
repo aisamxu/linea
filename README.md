@@ -7,7 +7,7 @@ Linea 是一个轻量、原生、多光标的 macOS 纯文本编辑器。窗口�
 - 只支持 Apple 芯片（arm64），最低 macOS 14。
 - 只处理 UTF-8 纯文本，不换行、横向滚动，跟随系统浅色/深色外观。
 - 正常退出时保存会话；下次启动恢复窗口、标签、光标和滚动位置。
-- 由 GitHub Actions 构建并做免费 ad-hoc 签名，未使用 Developer ID 公证，以 ZIP 分发。
+- 由 GitHub Actions 构建并做免费 ad-hoc 签名，未使用 Developer ID 公证，以 DMG 分发。
 
 ## 功能
 
@@ -91,21 +91,37 @@ xcodebuild test \
   -destination 'platform=macOS,arch=arm64'
 ```
 
-仓库不提交生成的 `Linea.xcodeproj`。CI 在 `macos-26`（arm64）上动态选择最新的 Xcode 26，生成工程、运行 XCTest、构建 Release arm64 `.app`、为完整 `.app` 做 ad-hoc 签名并验证签名、校验架构与最低系统版本，并上传 `Linea.zip` artifact。CI 只在推送 `v*` 版本 tag 时运行。
+仓库不提交生成的 `Linea.xcodeproj`。CI 在 `macos-26`（arm64）上动态选择最新的 Xcode 26，生成工程、运行 XCTest、构建 Release arm64 `.app`、为完整 `.app` 做 ad-hoc 签名并验证签名、校验架构/版本与最低系统版本，然后生成包含 `/Applications` 符号链接的 DMG、挂载复验并输出 `.sha256`。CI 只在推送 `v*` 版本 tag 时运行。
 
 ## 版本与标签
 
-当前正式版本为 **1.0.1**，版本号遵循语义化版本。`main` 已启用保护分支，禁止直接 push、强制 push 和删除分支，变更必须通过 PR 合并；日常 push 和 PR 不触发 CI，只有推送 `v*` tag 时才运行构建和测试。发布时在通过 CI 的 `main` 提交上创建 annotated tag `vMAJOR.MINOR.PATCH`（本次为 `v1.0.1`）并推送；随后使用该 tag 创建 GitHub Release，并附加 CI 构建的 ZIP。
+当前正式版本为 **1.0.2**，版本号遵循语义化版本。`main` 已启用保护分支，禁止直接 push、强制 push 和删除分支，变更必须通过 PR 合并；日常 push 和 PR 不触发 CI，只有推送 `v*` tag 时才运行构建和测试。发布时在通过 CI 的 `main` 提交上创建 annotated tag `vMAJOR.MINOR.PATCH`（本次为 `v1.0.2`）并推送；随后使用该 tag 创建 GitHub Release，并附加 CI 构建的 DMG 与 SHA-256 文件。
 
 ## 下载 App
 
-正式版本发布在 GitHub Releases 页面，附件是由 CI 构建并 ad-hoc 签名的 `Linea-1.0.1-macos-arm64-adhoc.zip`；也可以在 Actions 页面下载最近一次 CI artifact。`Linea.app` 使用免费 ad-hoc 签名，但没有 Developer ID 签名和 Apple 公证，因此首次打开仍可能被 Gatekeeper 拦截：
+正式版本发布在 GitHub Releases 页面，附件是由 CI 构建并 ad-hoc 签名的 `Linea-1.0.2-macos-arm64.dmg` 和对应的 `Linea-1.0.2-macos-arm64.dmg.sha256`；也可以在 Actions 页面下载最近一次 CI artifact。
 
-1. 解压 ZIP，把 `Linea.app` 放到 `/Applications` 或其他目录。
-2. 首次打开如提示“无法验证开发者”，右键 App 选择“打开”，或前往“系统设置 > 隐私与安全性”选择“仍要打开”。
-3. 如仍被隔离，在终端执行 `xattr -dr com.apple.quarantine /path/to/Linea.app` 后重新打开。
+下载后建议先校验 SHA-256：
 
-ad-hoc 签名用于避免未签名 bundle 被误判为“已损坏”。如需完全无提示的双击启动，必须使用付费 Apple Developer ID 签名并完成公证。不要对来源不明的应用绕过 Gatekeeper。
+```bash
+shasum -a 256 -c Linea-1.0.2-macos-arm64.dmg.sha256
+```
+
+安装步骤：
+
+1. 双击 DMG，把 `Linea.app` 拖入 `/Applications`，然后推出磁盘映像。
+2. macOS 14：首次打开如提示“无法验证开发者”，右键 App 选择“打开”。
+3. macOS 15 及以上：先尝试打开；如被拦截，前往“系统设置 > 隐私与安全性”，在安全性区域选择“仍要打开”。新版系统不再保证右键“打开”能绕过。
+4. 如仍被隔离，在终端执行 `xattr -dr com.apple.quarantine /Applications/Linea.app` 后重新打开。
+
+`Linea.app` 使用免费 ad-hoc 签名，可以避免未签名 bundle 被误判为“已损坏”，但没有 Developer ID 签名和 Apple 公证，因此首次打开仍会被 Gatekeeper 拦截。不要对来源不明的应用绕过 Gatekeeper。
+
+### 签名与 Gatekeeper
+
+- 自签名证书不能解决升级确认问题：它能通过 `codesign --verify`，但 `spctl` 仍会拒绝，也不能提交 Apple 公证；浏览器下载的每个新版本都会重新带上 `com.apple.quarantine`。
+- Gatekeeper 对隔离 App 只接受 Developer ID 签名 + Apple 公证。完全无提示的首次安装和后续升级需要付费 Apple Developer Program（$99/年）。
+- 免费替代方案：通过终端 `curl`/`gh release download` 下载（通常不会附加 quarantine）、使用 Sparkle 自动更新，或每次手动执行 `xattr`。Linea 当前没有内置自动更新。
+- 不要通过全局关闭 Gatekeeper 来规避提示。
 
 ## 已知限制
 
@@ -115,7 +131,7 @@ ad-hoc 签名用于避免未签名 bundle 被误判为“已损坏”。如需�
 - 内置行号 gutter 在极大文档滚动时的性能取决于 STTextView；10 万行加载已纳入自动化测试。
 - 中文输入法在单光标下使用 STTextView 原生实现；多光标组合输入依赖 TextKit 行为，仍需实机验证，若出现异常可先按 Esc 折叠为单光标输入。
 - 崩溃、系统强制结束进程或断电不属于会话恢复保证范围。
-- 仅使用免费 ad-hoc 签名，未使用 Developer ID 签名和 Apple 公证；首次打开仍需确认，不支持自动更新。
+- 仅使用免费 ad-hoc 签名，未使用 Developer ID 签名和 Apple 公证；首次打开仍需确认，不支持自动更新；不使用自签名证书（无法绕过 Gatekeeper）。
 
 ## 验收清单
 
@@ -131,8 +147,9 @@ ad-hoc 签名用于避免未签名 bundle 被误判为“已损坏”。如需�
 - [ ] 查找、替换、下一个/上一个匹配可用。
 - [ ] 单光标与多光标下的中文输入法组合输入可用，或已记录限制。
 - [ ] 约 10 MB / 10 万行文本可打开、滚动、编辑、退出保存和恢复；记录行号与滚动响应。
-- [ ] ZIP 内 `.app` 为 arm64、最低系统版本 14.0，ad-hoc 签名校验通过，图标在 Dock/Finder 中正确显示。
-- [ ] 从浏览器下载后首次打开不再显示“已损坏”，可通过右键“打开”或系统设置允许。
+- [ ] DMG 可挂载，根目录包含 `Linea.app` 和指向 `/Applications` 的符号链接；`.app` 为 arm64、版本 1.0.2/build 3、最低系统版本 14.0，ad-hoc 签名校验通过，图标在 Dock/Finder 中正确显示。
+- [ ] `.sha256` 校验通过。
+- [ ] 从浏览器下载后首次打开不再显示“已损坏”，macOS 14 可通过右键“打开”，macOS 15+ 可通过“系统设置 > 隐私与安全性 > 仍要打开”。
 - [ ] 重启后 `consumed.json` 和旧的 session 目录被清理。
 
 ## 许可证
