@@ -93,6 +93,9 @@ final class EditorIntegrationTests: XCTestCase {
             ]
         )
         let undo = try XCTUnwrap(editor.textView.undoManager)
+        // XCTest 在测试方法外维持自动事件撤销组，手动 begin/end 的两次输入会被合并。
+        // 测试中关闭按事件分组，显式验证每次输入各自成为一步撤销；真实 App 仍由事件分组。
+        undo.groupsByEvent = false
 
         performInsertion("X", in: editor, undo: undo)
         XCTAssertEqual(editor.textView.text, "X\nX")
@@ -235,6 +238,9 @@ final class EditorIntegrationTests: XCTestCase {
             selections: [NSRange(location: 0, length: 0)]
         )
         let undo = try XCTUnwrap(editor.textView.undoManager)
+        // 与 testTypingTwiceKeepsMultipleCarets 相同：测试环境没有真实事件边界，
+        // 改为手动分组，确保冻结前后的两次输入是两步撤销。
+        undo.groupsByEvent = false
 
         performInsertion("A", in: editor, undo: undo)
         editor.setEditingEnabled(false)

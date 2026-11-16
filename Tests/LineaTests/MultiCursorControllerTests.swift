@@ -96,13 +96,8 @@ final class MultiCursorControllerTests: XCTestCase {
             selections: [NSRange(location: 0, length: 3)]
         )
 
-        XCTAssertEqual(
-            result,
-            .updated([
-                NSRange(location: 0, length: 3),
-                NSRange(location: 4, length: 3),
-            ])
-        )
+        // "Foo" 与 "foo" 不视为同一匹配项，保持大小写敏感。
+        XCTAssertEqual(result, .noChange)
     }
 
     func testSelectNextOccurrenceReturnsNoChangeOnLastMatch() {
