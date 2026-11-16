@@ -67,11 +67,19 @@ final class MultiCursorPerformanceTests: XCTestCase {
         )
         undo.endUndoGrouping()
         XCTAssertEqual(editor.currentSelections().count, 500)
+        let insertedText = editor.textView.text
 
         undo.undo()
         spinMainRunLoop()
 
         XCTAssertEqual(editor.textView.text, originalText)
+        XCTAssertEqual(editor.currentSelections().count, 500)
+
+        // 批量撤销应注册对应的批量重做，并恢复全部光标。
+        undo.redo()
+        spinMainRunLoop()
+
+        XCTAssertEqual(editor.textView.text, insertedText)
         XCTAssertEqual(editor.currentSelections().count, 500)
     }
 
@@ -82,9 +90,11 @@ final class MultiCursorPerformanceTests: XCTestCase {
         print("[LineaPerf] insert 60 cursors: \(sixty * 1_000) ms")
         print("[LineaPerf] insert 500 cursors: \(fiveHundred * 1_000) ms")
 
-        // Debug 构建的宽松护栏，防止退回 O(k²) 级别的卡顿。
-        XCTAssertLessThan(sixty, 0.100, "60-cursor insert took \(sixty)s")
-        XCTAssertLessThan(fiveHundred, 0.500, "500-cursor insert took \(fiveHundred)s")
+        // Debug 构建的宽松护栏，防止退回逐 range 编辑/O(k²) 级别的卡顿。
+        // CI 的 macOS 虚拟机明显慢于本机，这里留出约 4–5 倍余量；
+        // 真实交互目标以 LINEA_PATCHES.md 中的 Release 本机数据为准。
+        XCTAssertLessThan(sixty, 0.150, "60-cursor insert took \(sixty)s")
+        XCTAssertLessThan(fiveHundred, 1.000, "500-cursor insert took \(fiveHundred)s")
 
         if sixty > 0 {
             let ratio = fiveHundred / sixty
@@ -114,7 +124,7 @@ final class MultiCursorPerformanceTests: XCTestCase {
         let elapsed = CFAbsoluteTimeGetCurrent() - start
 
         print("[LineaPerf] undo 500 cursors: \(elapsed * 1_000) ms")
-        XCTAssertLessThan(elapsed, 0.800, "500-cursor undo took \(elapsed)s")
+        XCTAssertLessThan(elapsed, 1.500, "500-cursor undo took \(elapsed)s")
         XCTAssertEqual(editor.currentSelections().count, 500)
     }
 

@@ -1806,10 +1806,42 @@ open class STTextView: NSView, NSTextInput, NSTextContent, STTextViewProtocol {
         )
     }
 
+    private struct BatchReplacement {
+        let textRange: NSTextRange
+        let replacementString: NSAttributedString
+        let previousString: NSAttributedString
+        /// 整批替换完成后，该替换文本的起始位置和长度。
+        /// 替换可能让文本变长，因此不能提前构造超出当前文档长度的 NSTextRange。
+        let undoLocation: NSTextLocation
+        let undoLength: Int
+    }
+
     func replaceCharacters(in textRanges: [NSTextRange], with replacementString: NSAttributedString, allowsTypingCoalescing: Bool) {
+        replaceCharacters(
+            in: textRanges.map { (textRange: $0, replacementString: replacementString) },
+            allowsTypingCoalescing: allowsTypingCoalescing
+        )
+    }
+
+    /// 批量替换多个 range；每个 range 可以使用不同的替换文本（撤销时使用）。
+    func replaceCharacters(in replacements: [(textRange: NSTextRange, replacementString: NSAttributedString)], allowsTypingCoalescing: Bool) {
+        guard !replacements.isEmpty else { return }
+
+        let sortedReplacements = replacements.sorted { $0.textRange.location > $1.textRange.location }
+
+        guard sortedReplacements.count > 1 else {
+            let replacement = sortedReplacements[0]
+            replaceCharacters(
+                in: replacement.textRange,
+                with: replacement.replacementString,
+                allowsTypingCoalescing: allowsTypingCoalescing
+            )
+            return
+        }
+
         // 多光标替换会把每个 range 都走一遍 TextKit 的选区修复；延迟到整批结束后只修一次。
         let contentStorage = textContentManager as? STTextContentStorage
-        let defersSelectionFix = textRanges.count > 1 && contentStorage != nil
+        let defersSelectionFix = contentStorage != nil
         if defersSelectionFix {
             contentStorage?.beginDeferringSelectionFix()
         }
@@ -1819,10 +1851,106 @@ open class STTextView: NSView, NSTextInput, NSTextContent, STTextViewProtocol {
             }
         }
 
-        // Replace from the end to beginning of the document
-        for textRange in textRanges.sorted(by: { $0.location > $1.location }) {
-            replaceCharacters(in: textRange, with: replacementString, allowsTypingCoalescing: allowsTypingCoalescing)
+        // 在替换前记录每个 range 的原文和替换后的最终位置。
+        // 位置更低的替换会改变文本长度，从而移动更高 range，撤销时必须使用最终位置。
+        let manager = textContentManager
+        var ascendingEntries: [BatchReplacement] = []
+        ascendingEntries.reserveCapacity(sortedReplacements.count)
+        var shift = 0
+        for replacement in sortedReplacements.reversed() {
+            let previousString = (manager as? NSTextContentStorage)!.attributedString!
+                .attributedSubstring(from: NSRange(replacement.textRange, in: manager))
+            let startLocation = manager.location(
+                replacement.textRange.location,
+                offsetBy: shift
+            ) ?? replacement.textRange.location
+            ascendingEntries.append(
+                BatchReplacement(
+                    textRange: replacement.textRange,
+                    replacementString: replacement.replacementString,
+                    previousString: previousString,
+                    undoLocation: startLocation,
+                    undoLength: replacement.replacementString.length
+                )
+            )
+            shift += replacement.replacementString.length - NSRange(replacement.textRange, in: manager).length
         }
+        let batchReplacements = Array(ascendingEntries.reversed())
+
+        // performEditingTransaction 不会合并 NSTextStorage 的 endEditing，
+        // 这里显式包一层 begin/endEditing，让 500 次替换只触发一次文本元素更新。
+        let textStorage = (manager as? NSTextContentStorage)?.textStorage
+        textStorage?.beginEditing()
+        manager.performEditingTransaction {
+            for replacement in batchReplacements {
+                replaceCharacters(
+                    in: replacement.textRange,
+                    with: replacement.replacementString,
+                    allowsTypingCoalescing: allowsTypingCoalescing,
+                    performsEditingTransaction: false,
+                    registersUndo: false,
+                    invokesDidChangeText: false
+                )
+            }
+        }
+        textStorage?.endEditing()
+
+        // 批量替换完成后，各 range 的最终位置已经存在，此时再构造撤销范围。
+        let undoEntries: [(undoRange: NSTextRange, previousString: NSAttributedString)] = batchReplacements.map { entry in
+            let endLocation = manager.location(entry.undoLocation, offsetBy: entry.undoLength) ?? entry.undoLocation
+            let undoRange = NSTextRange(location: entry.undoLocation, end: endLocation) ?? entry.textRange
+            return (undoRange: undoRange, previousString: entry.previousString)
+        }
+
+        // 文本检查等服务必须在 NSTextStorage 完成批量编辑后才能安全读取范围，
+        // 因此把 didChangeText 统一放到 endEditing 之后，并使用替换后的最终范围。
+        for entry in undoEntries {
+            didChangeText(in: entry.undoRange)
+        }
+
+        registerBatchUndo(undoEntries)
+    }
+
+    private func registerBatchUndo(_ entries: [(undoRange: NSTextRange, previousString: NSAttributedString)]) {
+        guard allowsUndo, let undoManager, undoManager.isUndoRegistrationEnabled else { return }
+
+        // 多光标批量编辑始终各自成为一个撤销步骤，避免 CoalescingUndoManager 把相邻按键错误合并。
+        if let coalescingUndoManager = undoManager as? CoalescingUndoManager, !undoManager.isUndoing, !undoManager.isRedoing {
+            coalescingUndoManager.endCoalescing()
+        }
+
+        // 撤销/重做时低位置替换同样会移动高位置文本，逐个累计偏移得到最终光标位置。
+        var caretOffsets = [Int](repeating: 0, count: entries.count)
+        var caretShift = 0
+        for index in stride(from: entries.count - 1, through: 0, by: -1) {
+            let entry = entries[index]
+            caretOffsets[index] = entry.previousString.length + caretShift
+            caretShift += entry.previousString.length - NSRange(entry.undoRange, in: textContentManager).length
+        }
+
+        undoManager.beginUndoGrouping()
+        undoManager.registerUndo(withTarget: self) { textView in
+            textView.replaceCharacters(
+                in: entries.map { (textRange: $0.undoRange, replacementString: $0.previousString) },
+                allowsTypingCoalescing: false
+            )
+            // 恢复整组多光标，光标收拢到写回文本末尾；否则 TextKit 会把选区收缩成一个。
+            let selections = entries.enumerated().compactMap { index, entry -> NSTextSelection? in
+                guard let caretLocation = textView.textContentManager.location(
+                    entry.undoRange.location,
+                    offsetBy: caretOffsets[index]
+                ) else { return nil }
+                return NSTextSelection(
+                    range: NSTextRange(location: caretLocation),
+                    affinity: .downstream,
+                    granularity: .character
+                )
+            }
+            // entries 按位置降序，NSTextLayoutManager 需要升序选区。
+            textView.textLayoutManager.textSelections = Array(selections.reversed())
+            textView.needsLayout = true
+        }
+        undoManager.endUndoGrouping()
     }
 
     func replaceCharacters(in textRange: NSTextRange, with replacementString: String, useTypingAttributes: Bool, allowsTypingCoalescing: Bool) {
@@ -1833,23 +1961,31 @@ open class STTextView: NSView, NSTextInput, NSTextContent, STTextViewProtocol {
         )
     }
 
-    func replaceCharacters(in textRange: NSTextRange, with replacementString: NSAttributedString, allowsTypingCoalescing: Bool) {
+    func replaceCharacters(in textRange: NSTextRange, with replacementString: NSAttributedString, allowsTypingCoalescing: Bool, performsEditingTransaction: Bool = true, registersUndo: Bool = true, invokesDidChangeText: Bool = true) {
         let previousStringInRange = (textContentManager as? NSTextContentStorage)!.attributedString!.attributedSubstring(from: NSRange(textRange, in: textContentManager))
 
         textWillChange(self)
         delegateProxy.textView(self, willChangeTextIn: textRange, replacementString: replacementString.string)
 
-        textContentManager.performEditingTransaction {
+        let replaceContents = { [self] in
             textContentManager.replaceContents(
                 in: textRange,
                 with: [NSTextParagraph(attributedString: replacementString)]
             )
         }
+        if performsEditingTransaction {
+            textContentManager.performEditingTransaction(replaceContents)
+        } else {
+            // 调用方已经开启了批量编辑事务。
+            replaceContents()
+        }
 
         delegateProxy.textView(self, didChangeTextIn: textRange, replacementString: replacementString.string)
-        didChangeText(in: textRange)
+        if invokesDidChangeText {
+            didChangeText(in: textRange)
+        }
 
-        guard allowsUndo, let undoManager, undoManager.isUndoRegistrationEnabled else { return }
+        guard registersUndo, allowsUndo, let undoManager, undoManager.isUndoRegistrationEnabled else { return }
 
         // Reach to NSTextStorage because NSTextContentStorage range extraction is cumbersome.
         // A range that is as long as replacement string, so when undo it undo
