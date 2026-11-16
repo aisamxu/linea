@@ -95,11 +95,11 @@ xcodebuild test \
 
 ## 版本与标签
 
-当前正式版本为 **1.0.0**，版本号遵循语义化版本。发布时在通过 CI 的 `main` 提交上创建 annotated tag `vMAJOR.MINOR.PATCH`（本次为 `v1.0.0`）并推送；tag 推送同样会触发 CI。按项目约定不创建 GitHub Release。
+当前正式版本为 **1.0.0**，版本号遵循语义化版本。发布时在通过 CI 的 `main` 提交上创建 annotated tag `vMAJOR.MINOR.PATCH`（本次为 `v1.0.0`）并推送；tag 推送同样会触发 CI，随后使用该 tag 创建 GitHub Release，并附加 CI 构建的 `Linea.zip`。
 
 ## 下载未签名 App
 
-CI artifact 中的 `Linea.app` 没有开发者签名和公证，Gatekeeper 会拦截首次打开。对来源可信的构建，可以：
+正式版本发布在 GitHub Releases 页面，附件是由 CI 构建的 `Linea.zip`；也可以在 Actions 页面下载最近一次 CI artifact。`Linea.app` 没有开发者签名和公证，Gatekeeper 会拦截首次打开。对来源可信的构建，可以：
 
 1. 解压 ZIP，把 `Linea.app` 放到 `/Applications` 或其他目录。
 2. 尝试打开一次，然后前往“系统设置 > 隐私与安全性”，选择“仍要打开”。
