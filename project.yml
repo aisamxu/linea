@@ -1,0 +1,80 @@
+name: Linea
+
+options:
+  bundleIdPrefix: com.samxu
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+  xcodeVersion: "26.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    ARCHS: arm64
+    ENABLE_HARDENED_RUNTIME: NO
+    CLANG_ENABLE_MODULES: YES
+    DEAD_CODE_STRIPPING: YES
+
+packages:
+  STTextView:
+    url: https://github.com/krzyzanowskim/STTextView.git
+    exactVersion: 2.4.1
+  STTextKitPlus:
+    url: https://github.com/krzyzanowskim/STTextKitPlus.git
+    exactVersion: 0.3.1
+
+targets:
+  Linea:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Sources/Linea
+      - path: Resources/Assets.xcassets
+    settings:
+      base:
+        PRODUCT_NAME: Linea
+        PRODUCT_BUNDLE_IDENTIFIER: com.samxu.Linea
+        INFOPLIST_FILE: Resources/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENABLE_HARDENED_RUNTIME: NO
+        CODE_SIGN_STYLE: Automatic
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
+        COMBINE_HIDPI_IMAGES: YES
+        SWIFT_EMIT_LOC_STRINGS: NO
+      configs:
+        Debug:
+          ENABLE_TESTABILITY: YES
+    dependencies:
+      - package: STTextView
+        product: STTextView
+      - package: STTextKitPlus
+        product: STTextKitPlus
+    scheme:
+      testTargets:
+        - LineaTests
+      gatherCoverageData: false
+
+  LineaTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Tests/LineaTests
+    dependencies:
+      - target: Linea
+      - package: STTextView
+        product: STTextView
+      - package: STTextKitPlus
+        product: STTextKitPlus
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.samxu.LineaTests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Linea.app/Contents/MacOS/Linea"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_TESTABILITY: YES

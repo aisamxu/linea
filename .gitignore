@@ -1,0 +1,21 @@
+# XcodeGen 生成物（project.yml 才是工程源文件）
+Linea.xcodeproj/
+*.xcodeproj/
+
+# Xcode / SwiftPM 构建产物
+build/
+DerivedData/
+.swiftpm/
+.build/
+*.xcresult
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+xcuserdata/
+
+# 打包与压缩产物
+Linea.zip
+*.zip
+
+# macOS 系统文件
+.DS_Store
+._*
