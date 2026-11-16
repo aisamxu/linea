@@ -16,7 +16,10 @@ concurrency:
 jobs:
   build-and-test:
     name: Build and test (Apple silicon)
-    runs-on: macos-26
+    # macos-15 是 public 仓库可用的 arm64 标准 runner；
+    # macos-26 仍是 public preview，容量/排队不稳定。
+    # 镜像默认 Xcode 为 16.4，下面会显式选择已安装的 Xcode 26.x。
+    runs-on: macos-15
     timeout-minutes: 45
 
     steps:

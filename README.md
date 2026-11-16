@@ -93,7 +93,7 @@ xcodebuild test \
   -destination 'platform=macOS,arch=arm64'
 ```
 
-仓库不提交生成的 `Linea.xcodeproj`。CI 在 `macos-26`（arm64）上动态选择最新的 Xcode 26，生成工程、运行 XCTest、构建 Release arm64 `.app`、为完整 `.app` 做 ad-hoc 签名并验证签名、校验架构/版本与最低系统版本，然后生成包含 `/Applications` 符号链接的 DMG、挂载复验并输出 `.sha256`。CI 只在推送 `v*` 版本 tag 时运行。
+仓库不提交生成的 `Linea.xcodeproj`。CI 在 `macos-15`（arm64）上动态选择最新的 Xcode 26，生成工程、运行 XCTest、构建 Release arm64 `.app`、为完整 `.app` 做 ad-hoc 签名并验证签名、校验架构/版本与最低系统版本，然后生成包含 `/Applications` 符号链接的 DMG、挂载复验并输出 `.sha256`。CI 只在推送 `v*` 版本 tag 时运行。
 
 ## 版本与标签
 
