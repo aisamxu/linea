@@ -7,7 +7,7 @@ Linea 是一个轻量、原生、多光标的 macOS 纯文本编辑器。窗口�
 - 只支持 Apple 芯片（arm64），最低 macOS 14。
 - 只处理 UTF-8 纯文本，不换行、横向滚动，跟随系统浅色/深色外观。
 - 正常退出时保存会话；下次启动恢复窗口、标签、光标和滚动位置。
-- 未签名构建，由 GitHub Actions 产出一个可下载的 ZIP。
+- 由 GitHub Actions 构建并做免费 ad-hoc 签名，未使用 Developer ID 公证，以 ZIP 分发。
 
 ## 功能
 
@@ -91,21 +91,21 @@ xcodebuild test \
   -destination 'platform=macOS,arch=arm64'
 ```
 
-仓库不提交生成的 `Linea.xcodeproj`。CI 在 `macos-26`（arm64）上动态选择最新的 Xcode 26，生成工程、运行 XCTest、构建 Release arm64 `.app`、校验架构与最低系统版本，并上传 `Linea.zip` artifact。PR、push 和手动触发都会运行 CI。
+仓库不提交生成的 `Linea.xcodeproj`。CI 在 `macos-26`（arm64）上动态选择最新的 Xcode 26，生成工程、运行 XCTest、构建 Release arm64 `.app`、为完整 `.app` 做 ad-hoc 签名并验证签名、校验架构与最低系统版本，并上传 `Linea.zip` artifact。PR、push 和手动触发都会运行 CI。
 
 ## 版本与标签
 
-当前正式版本为 **1.0.0**，版本号遵循语义化版本。发布时在通过 CI 的 `main` 提交上创建 annotated tag `vMAJOR.MINOR.PATCH`（本次为 `v1.0.0`）并推送；tag 推送同样会触发 CI，随后使用该 tag 创建 GitHub Release，并附加 CI 构建的 `Linea.zip`。
+当前正式版本为 **1.0.1**，版本号遵循语义化版本。发布时在通过 CI 的 `main` 提交上创建 annotated tag `vMAJOR.MINOR.PATCH`（本次为 `v1.0.1`）并推送；tag 推送同样会触发 CI，随后使用该 tag 创建 GitHub Release，并附加 CI 构建的 ZIP。
 
-## 下载未签名 App
+## 下载 App
 
-正式版本发布在 GitHub Releases 页面，附件是由 CI 构建的 `Linea.zip`；也可以在 Actions 页面下载最近一次 CI artifact。`Linea.app` 没有开发者签名和公证，Gatekeeper 会拦截首次打开。对来源可信的构建，可以：
+正式版本发布在 GitHub Releases 页面，附件是由 CI 构建并 ad-hoc 签名的 `Linea-1.0.1-macos-arm64-adhoc.zip`；也可以在 Actions 页面下载最近一次 CI artifact。`Linea.app` 使用免费 ad-hoc 签名，但没有 Developer ID 签名和 Apple 公证，因此首次打开仍可能被 Gatekeeper 拦截：
 
 1. 解压 ZIP，把 `Linea.app` 放到 `/Applications` 或其他目录。
-2. 尝试打开一次，然后前往“系统设置 > 隐私与安全性”，选择“仍要打开”。
-3. 或者在终端执行 `xattr -dr com.apple.quarantine /path/to/Linea.app` 后重新打开。
+2. 首次打开如提示“无法验证开发者”，右键 App 选择“打开”，或前往“系统设置 > 隐私与安全性”选择“仍要打开”。
+3. 如仍被隔离，在终端执行 `xattr -dr com.apple.quarantine /path/to/Linea.app` 后重新打开。
 
-不要对来源不明的应用绕过 Gatekeeper。
+ad-hoc 签名用于避免未签名 bundle 被误判为“已损坏”。如需完全无提示的双击启动，必须使用付费 Apple Developer ID 签名并完成公证。不要对来源不明的应用绕过 Gatekeeper。
 
 ## 已知限制
 
@@ -115,7 +115,7 @@ xcodebuild test \
 - 内置行号 gutter 在极大文档滚动时的性能取决于 STTextView；10 万行加载已纳入自动化测试。
 - 中文输入法在单光标下使用 STTextView 原生实现；多光标组合输入依赖 TextKit 行为，仍需实机验证，若出现异常可先按 Esc 折叠为单光标输入。
 - 崩溃、系统强制结束进程或断电不属于会话恢复保证范围。
-- 不支持代码签名、公证或自动更新。
+- 仅使用免费 ad-hoc 签名，未使用 Developer ID 签名和 Apple 公证；首次打开仍需确认，不支持自动更新。
 
 ## 验收清单
 
@@ -131,7 +131,8 @@ xcodebuild test \
 - [ ] 查找、替换、下一个/上一个匹配可用。
 - [ ] 单光标与多光标下的中文输入法组合输入可用，或已记录限制。
 - [ ] 约 10 MB / 10 万行文本可打开、滚动、编辑、退出保存和恢复；记录行号与滚动响应。
-- [ ] ZIP 内 `.app` 为 arm64、最低系统版本 14.0，图标在 Dock/Finder 中正确显示。
+- [ ] ZIP 内 `.app` 为 arm64、最低系统版本 14.0，ad-hoc 签名校验通过，图标在 Dock/Finder 中正确显示。
+- [ ] 从浏览器下载后首次打开不再显示“已损坏”，可通过右键“打开”或系统设置允许。
 - [ ] 重启后 `consumed.json` 和旧的 session 目录被清理。
 
 ## 许可证
