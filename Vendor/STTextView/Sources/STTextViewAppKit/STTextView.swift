@@ -1810,9 +1810,10 @@ open class STTextView: NSView, NSTextInput, NSTextContent, STTextViewProtocol {
         let textRange: NSTextRange
         let replacementString: NSAttributedString
         let previousString: NSAttributedString
-        /// 整批替换完成后，该替换文本的起始位置和长度。
-        /// 替换可能让文本变长，因此不能提前构造超出当前文档长度的 NSTextRange。
-        let undoLocation: NSTextLocation
+        /// 整批替换完成后，该替换文本在最终文档中的起始 UTF-16 偏移与长度。
+        /// 不能在替换前用 location(offsetBy:) 计算最终位置：文本变长时，
+        /// 偏移可能暂时超出当前文档长度而返回 nil，导致撤销范围落到错误位置。
+        let undoOffset: Int
         let undoLength: Int
     }
 
@@ -1858,22 +1859,22 @@ open class STTextView: NSView, NSTextInput, NSTextContent, STTextViewProtocol {
         ascendingEntries.reserveCapacity(sortedReplacements.count)
         var shift = 0
         for replacement in sortedReplacements.reversed() {
+            let originalRange = NSRange(replacement.textRange, in: manager)
             let previousString = (manager as? NSTextContentStorage)!.attributedString!
-                .attributedSubstring(from: NSRange(replacement.textRange, in: manager))
-            let startLocation = manager.location(
-                replacement.textRange.location,
-                offsetBy: shift
-            ) ?? replacement.textRange.location
+                .attributedSubstring(from: originalRange)
+
+            // 最终位置 = 原始 UTF-16 偏移 + 所有更低位置替换造成的长度变化。
+            // 这里只保存整数偏移，等整批编辑完成后再生成 NSTextLocation。
             ascendingEntries.append(
                 BatchReplacement(
                     textRange: replacement.textRange,
                     replacementString: replacement.replacementString,
                     previousString: previousString,
-                    undoLocation: startLocation,
+                    undoOffset: originalRange.location + shift,
                     undoLength: replacement.replacementString.length
                 )
             )
-            shift += replacement.replacementString.length - NSRange(replacement.textRange, in: manager).length
+            shift += replacement.replacementString.length - originalRange.length
         }
         let batchReplacements = Array(ascendingEntries.reversed())
 
@@ -1895,10 +1896,12 @@ open class STTextView: NSView, NSTextInput, NSTextContent, STTextViewProtocol {
         }
         textStorage?.endEditing()
 
-        // 批量替换完成后，各 range 的最终位置已经存在，此时再构造撤销范围。
+        // 此时文档已经是最终状态，用记录下来的 UTF-16 偏移生成真实位置。
+        let documentStart = manager.documentRange.location
         let undoEntries: [(undoRange: NSTextRange, previousString: NSAttributedString)] = batchReplacements.map { entry in
-            let endLocation = manager.location(entry.undoLocation, offsetBy: entry.undoLength) ?? entry.undoLocation
-            let undoRange = NSTextRange(location: entry.undoLocation, end: endLocation) ?? entry.textRange
+            let startLocation = manager.location(documentStart, offsetBy: entry.undoOffset) ?? documentStart
+            let endLocation = manager.location(startLocation, offsetBy: entry.undoLength) ?? startLocation
+            let undoRange = NSTextRange(location: startLocation, end: endLocation) ?? entry.textRange
             return (undoRange: undoRange, previousString: entry.previousString)
         }
 
@@ -1919,13 +1922,15 @@ open class STTextView: NSView, NSTextInput, NSTextContent, STTextViewProtocol {
             coalescingUndoManager.endCoalescing()
         }
 
-        // 撤销/重做时低位置替换同样会移动高位置文本，逐个累计偏移得到最终光标位置。
+        // 撤销/重做时低位置替换同样会移动高位置文本。
+        // 直接计算写回后光标在最终文档中的 UTF-16 偏移，避免使用编辑前的 NSTextLocation。
         var caretOffsets = [Int](repeating: 0, count: entries.count)
         var caretShift = 0
         for index in stride(from: entries.count - 1, through: 0, by: -1) {
             let entry = entries[index]
-            caretOffsets[index] = entry.previousString.length + caretShift
-            caretShift += entry.previousString.length - NSRange(entry.undoRange, in: textContentManager).length
+            let currentRange = NSRange(entry.undoRange, in: textContentManager)
+            caretOffsets[index] = currentRange.location + caretShift + entry.previousString.length
+            caretShift += entry.previousString.length - currentRange.length
         }
 
         undoManager.beginUndoGrouping()
@@ -1935,9 +1940,11 @@ open class STTextView: NSView, NSTextInput, NSTextContent, STTextViewProtocol {
                 allowsTypingCoalescing: false
             )
             // 恢复整组多光标，光标收拢到写回文本末尾；否则 TextKit 会把选区收缩成一个。
-            let selections = entries.enumerated().compactMap { index, entry -> NSTextSelection? in
+            // caretOffsets 是写回后最终文档中的 UTF-16 偏移，直接从文档起点生成位置。
+            let documentStart = textView.textContentManager.documentRange.location
+            let selections = entries.enumerated().compactMap { index, _ -> NSTextSelection? in
                 guard let caretLocation = textView.textContentManager.location(
-                    entry.undoRange.location,
+                    documentStart,
                     offsetBy: caretOffsets[index]
                 ) else { return nil }
                 return NSTextSelection(

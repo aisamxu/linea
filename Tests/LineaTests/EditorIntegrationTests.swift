@@ -79,7 +79,14 @@ final class EditorIntegrationTests: XCTestCase {
         undo.redo()
         spinMainRunLoop()
         XCTAssertEqual(editor.textView.text, "X\nX")
-        XCTAssertEqual(editor.currentSelections().count, 2)
+        // 重做后光标必须落在两段恢复的文本之后，而不是因为撤销范围错位而重叠。
+        XCTAssertEqual(
+            editor.currentSelections(),
+            [
+                NSRange(location: 1, length: 0),
+                NSRange(location: 3, length: 0),
+            ]
+        )
     }
 
     func testTypingTwiceKeepsMultipleCarets() throws {
