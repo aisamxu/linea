@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# 从项目根目录的品牌源图生成 macOS AppIcon 所需的全部尺寸。
-# 源图是唯一事实来源；本脚本可重复执行，生成结果会提交到仓库。
+# 以已提交的 1024px AppIcon 成品为母版，重新生成其余 macOS 图标尺寸。
+# 母版是唯一事实来源；本脚本可重复执行，生成结果会提交到仓库。
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SOURCE="$ROOT_DIR/linea-b2-l-caret.png"
 DEST="$ROOT_DIR/Resources/Assets.xcassets/AppIcon.appiconset"
+SOURCE="$DEST/icon_512x512@2x.png"
 
 if [[ ! -f "$SOURCE" ]]; then
   echo "错误：找不到图标源文件 $SOURCE" >&2
@@ -35,7 +35,7 @@ generate 256  "icon_128x128@2x.png"
 generate 256  "icon_256x256.png"
 generate 512  "icon_256x256@2x.png"
 generate 512  "icon_512x512.png"
-generate 1024 "icon_512x512@2x.png"
+# 1024px 槽位即母版本身，保留不覆盖
 
 cat > "$DEST/Contents.json" <<'JSON'
 {

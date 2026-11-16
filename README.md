@@ -1,6 +1,6 @@
 # Linea
 
-![Linea 图标](linea-b2-l-caret.png)
+![Linea 图标](Resources/Assets.xcassets/AppIcon.appiconset/icon_512x512@2x.png)
 
 Linea 是一个轻量、原生、多光标的 macOS 纯文本编辑器。窗口、菜单和标签栏使用 AppKit / SwiftUI 搭建，文本编辑基于 [STTextView](https://github.com/krzyzanowskim/STTextView)。
 
@@ -92,6 +92,10 @@ xcodebuild test \
 ```
 
 仓库不提交生成的 `Linea.xcodeproj`。CI 在 `macos-26`（arm64）上动态选择最新的 Xcode 26，生成工程、运行 XCTest、构建 Release arm64 `.app`、校验架构与最低系统版本，并上传 `Linea.zip` artifact。PR、push 和手动触发都会运行 CI。
+
+## 版本与标签
+
+当前正式版本为 **1.0.0**，版本号遵循语义化版本。发布时在通过 CI 的 `main` 提交上创建 annotated tag `vMAJOR.MINOR.PATCH`（本次为 `v1.0.0`）并推送；tag 推送同样会触发 CI。按项目约定不创建 GitHub Release。
 
 ## 下载未签名 App
 
