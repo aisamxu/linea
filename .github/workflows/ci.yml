@@ -1,9 +1,10 @@
 name: CI
 
 on:
-  pull_request:
+  # 只在推送 v* 版本标签时构建，避免日常分支和 PR 反复占用 macOS runner
   push:
-  workflow_dispatch:
+    tags:
+      - 'v*'
 
 permissions:
   contents: read
