@@ -86,7 +86,12 @@ final class WindowGeometryTests: XCTestCase {
     }
 
     func testNonFiniteValuesAreSanitized() {
-        let frame = NSRect(x: .nan, y: .infinity, width: 900, height: 600)
+        let frame = NSRect(
+            x: CGFloat.nan,
+            y: CGFloat.infinity,
+            width: 900,
+            height: 600
+        )
         let adjusted = WindowGeometry.adjustedFrame(
             frame,
             screenFrames: [primaryScreen],
