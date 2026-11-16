@@ -95,6 +95,22 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY=""
 
+      - name: Ad-hoc sign app bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="build/Build/Products/Release/Linea.app"
+
+          # 免费发布方案：为完整 .app 做 ad-hoc 签名，修复未签名 bundle
+          # 从浏览器下载后被 Gatekeeper 误判为“已损坏”的问题。
+          codesign --force --deep --sign - --timestamp=none "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+          SIGN_INFO="$(codesign -dv --verbose=4 "$APP" 2>&1)"
+          echo "$SIGN_INFO"
+          echo "$SIGN_INFO" | grep -qx 'Identifier=com.samxu.Linea'
+          echo "$SIGN_INFO" | grep -qx 'Signature=adhoc'
+
       - name: Validate app bundle
         shell: bash
         run: |
@@ -105,6 +121,8 @@ jobs:
 
           test -d "$APP"
           test -x "$EXEC"
+          test -d "$APP/Contents/_CodeSignature"
+          codesign --verify --deep --strict --verbose=2 "$APP"
 
           ARCHS="$(lipo -archs "$EXEC" | tr -s '[:space:]' '\n' | sort | tr '\n' ' ' | sed 's/ $//')"
           test "$ARCHS" = "arm64"
@@ -123,8 +141,10 @@ jobs:
           PY
 
           echo "Architecture: $ARCHS"
-          echo "Signature (informational):"
-          codesign -dv --verbose=4 "$APP" 2>&1 || true
+          echo "Signature:"
+          codesign -dv --verbose=4 "$APP" 2>&1
+          echo "Gatekeeper assessment (informational; ad-hoc is not notarized):"
+          spctl --assess --type execute --verbose=4 "$APP" 2>&1 || true
 
       - name: Package ZIP
         shell: bash
@@ -138,7 +158,10 @@ jobs:
           ditto -x -k Linea.zip "$EXTRACT_ROOT"
           test -x "$EXTRACT_ROOT/Linea.app/Contents/MacOS/Linea"
           test -s "$EXTRACT_ROOT/Linea.app/Contents/Resources/Assets.car"
+          test -d "$EXTRACT_ROOT/Linea.app/Contents/_CodeSignature"
           test "$(lipo -archs "$EXTRACT_ROOT/Linea.app/Contents/MacOS/Linea")" = "arm64"
+          # 确认 ad-hoc 签名在 ZIP 打包和解压后仍然完整
+          codesign --verify --deep --strict --verbose=2 "$EXTRACT_ROOT/Linea.app"
           rm -rf "$EXTRACT_ROOT"
 
           ls -lh Linea.zip
@@ -146,7 +169,7 @@ jobs:
       - name: Upload app ZIP
         uses: actions/upload-artifact@v7
         with:
-          name: Linea-macos-arm64-unsigned
+          name: Linea-macos-arm64-adhoc-signed
           path: Linea.zip
           if-no-files-found: error
           retention-days: 7
