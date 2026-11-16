@@ -2,7 +2,7 @@
 
 ![Linea 图标](Resources/Assets.xcassets/AppIcon.appiconset/icon_256x256.png)
 
-Linea 是一个轻量、原生、多光标的 macOS 纯文本编辑器。窗口、菜单和标签栏使用 AppKit / SwiftUI 搭建，文本编辑基于 [STTextView](https://github.com/krzyzanowskim/STTextView)。
+Linea 是一个轻量、原生、多光标的 macOS 纯文本编辑器。窗口、菜单和标签栏使用 AppKit / SwiftUI 搭建，文本编辑基于 [STTextView](https://github.com/krzyzanowskim/STTextView) 2.4.1；项目内 vendored 了该版本并附带多光标性能补丁，说明见 [Vendor/STTextView/LINEA_PATCHES.md](Vendor/STTextView/LINEA_PATCHES.md)。
 
 - 只支持 Apple 芯片（arm64），最低 macOS 14。
 - 只处理 UTF-8 纯文本，不换行、横向滚动，跟随系统浅色/深色外观。
@@ -69,6 +69,8 @@ Linea 是一个轻量、原生、多光标的 macOS 纯文本编辑器。窗口�
 ## 构建与测试
 
 要求：macOS 14+、Apple 芯片、Xcode 26、[XcodeGen](https://github.com/yonaskolb/XcodeGen)。
+
+STTextView 2.4.1 已放在 `Vendor/STTextView`，`xcodegen generate` 会直接使用本地包；无需额外拉取该依赖。补丁不改变公开接口，升级方式见 [Vendor/STTextView/LINEA_PATCHES.md](Vendor/STTextView/LINEA_PATCHES.md)。
 
 ```bash
 brew install xcodegen
