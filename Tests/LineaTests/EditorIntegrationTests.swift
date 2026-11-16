@@ -157,6 +157,15 @@ final class EditorIntegrationTests: XCTestCase {
             lineCount
         )
 
+        // 两次输入各成一个撤销组，需要撤销两次才能回到初始文本。
+        undo.undo()
+        spinMainRunLoop()
+        XCTAssertEqual(editor.currentSelections().count, lineCount)
+        XCTAssertEqual(
+            editor.textView.text,
+            lines.map { "X" + $0 }.joined(separator: "\n")
+        )
+
         undo.undo()
         spinMainRunLoop()
         XCTAssertEqual(editor.textView.text, text)
