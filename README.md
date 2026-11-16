@@ -91,11 +91,11 @@ xcodebuild test \
   -destination 'platform=macOS,arch=arm64'
 ```
 
-仓库不提交生成的 `Linea.xcodeproj`。CI 在 `macos-26`（arm64）上动态选择最新的 Xcode 26，生成工程、运行 XCTest、构建 Release arm64 `.app`、为完整 `.app` 做 ad-hoc 签名并验证签名、校验架构与最低系统版本，并上传 `Linea.zip` artifact。PR、push 和手动触发都会运行 CI。
+仓库不提交生成的 `Linea.xcodeproj`。CI 在 `macos-26`（arm64）上动态选择最新的 Xcode 26，生成工程、运行 XCTest、构建 Release arm64 `.app`、为完整 `.app` 做 ad-hoc 签名并验证签名、校验架构与最低系统版本，并上传 `Linea.zip` artifact。CI 只在推送 `v*` 版本 tag 时运行。
 
 ## 版本与标签
 
-当前正式版本为 **1.0.1**，版本号遵循语义化版本。发布时在通过 CI 的 `main` 提交上创建 annotated tag `vMAJOR.MINOR.PATCH`（本次为 `v1.0.1`）并推送；tag 推送同样会触发 CI，随后使用该 tag 创建 GitHub Release，并附加 CI 构建的 ZIP。
+当前正式版本为 **1.0.1**，版本号遵循语义化版本。`main` 已启用保护分支，禁止直接 push、强制 push 和删除分支，变更必须通过 PR 合并；日常 push 和 PR 不触发 CI，只有推送 `v*` tag 时才运行构建和测试。发布时在通过 CI 的 `main` 提交上创建 annotated tag `vMAJOR.MINOR.PATCH`（本次为 `v1.0.1`）并推送；随后使用该 tag 创建 GitHub Release，并附加 CI 构建的 ZIP。
 
 ## 下载 App
 
