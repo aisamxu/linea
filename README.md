@@ -1,6 +1,6 @@
 # Linea
 
-![Linea 图标](Resources/Assets.xcassets/AppIcon.appiconset/icon_512x512@2x.png)
+![Linea 图标](Resources/Assets.xcassets/AppIcon.appiconset/icon_256x256.png)
 
 Linea 是一个轻量、原生、多光标的 macOS 纯文本编辑器。窗口、菜单和标签栏使用 AppKit / SwiftUI 搭建，文本编辑基于 [STTextView](https://github.com/krzyzanowskim/STTextView)。
 
