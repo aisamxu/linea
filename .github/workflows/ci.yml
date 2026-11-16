@@ -1,0 +1,161 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and test (Apple silicon)
+    runs-on: macos-26
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Select Xcode 26
+        shell: bash
+        run: |
+          set -euo pipefail
+          XCODE_APP="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | grep -viE 'beta|rc' | tail -n 1)"
+          test -n "$XCODE_APP"
+          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+          xcodebuild -version
+          test "$(uname -m)" = "arm64"
+          xcodebuild -version | head -n 1 | grep -q '^Xcode 26'
+
+      - name: Install XcodeGen
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            HOMEBREW_NO_AUTO_UPDATE=1 brew install xcodegen
+          fi
+          xcodegen --version
+
+      - name: Generate Xcode project
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodegen generate
+
+      - name: Resolve Swift packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project Linea.xcodeproj \
+            -scheme Linea \
+            -resolvePackageDependencies \
+            -derivedDataPath build \
+            -clonedSourcePackagesDirPath "$PWD/build/SourcePackages"
+
+      - name: Run tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild test \
+            -project Linea.xcodeproj \
+            -scheme Linea \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath build \
+            -clonedSourcePackagesDirPath "$PWD/build/SourcePackages" \
+            -parallel-testing-enabled NO \
+            -resultBundlePath TestResults.xcresult \
+            CODE_SIGN_IDENTITY=- \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM= \
+            CODE_SIGNING_REQUIRED=NO
+
+      - name: Build Release app
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild build \
+            -project Linea.xcodeproj \
+            -scheme Linea \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath build \
+            -clonedSourcePackagesDirPath "$PWD/build/SourcePackages" \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=NO \
+            MACOSX_DEPLOYMENT_TARGET=14.0 \
+            ENABLE_HARDENED_RUNTIME=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Validate app bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="build/Build/Products/Release/Linea.app"
+          EXEC="$APP/Contents/MacOS/Linea"
+          PLIST="$APP/Contents/Info.plist"
+
+          test -d "$APP"
+          test -x "$EXEC"
+
+          ARCHS="$(lipo -archs "$EXEC" | tr -s '[:space:]' '\n' | sort | tr '\n' ' ' | sed 's/ $//')"
+          test "$ARCHS" = "arm64"
+
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIconName' "$PLIST" | grep -qx 'AppIcon'
+          test -s "$APP/Contents/Resources/Assets.car"
+
+          MIN_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$PLIST")"
+          python3 - "$MIN_VERSION" <<'PY'
+          import sys
+          version = sys.argv[1]
+          parts = tuple(int(part) for part in version.split("."))
+          if parts < (14, 0):
+              raise SystemExit(f"LSMinimumSystemVersion {version} is below 14.0")
+          print(f"LSMinimumSystemVersion: {version}")
+          PY
+
+          echo "Architecture: $ARCHS"
+          echo "Signature (informational):"
+          codesign -dv --verbose=4 "$APP" 2>&1 || true
+
+      - name: Package ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="build/Build/Products/Release/Linea.app"
+          rm -f Linea.zip
+          ditto -c -k --sequesterRsrc --keepParent "$APP" Linea.zip
+
+          EXTRACT_ROOT="$(mktemp -d)"
+          ditto -x -k Linea.zip "$EXTRACT_ROOT"
+          test -x "$EXTRACT_ROOT/Linea.app/Contents/MacOS/Linea"
+          test -s "$EXTRACT_ROOT/Linea.app/Contents/Resources/Assets.car"
+          test "$(lipo -archs "$EXTRACT_ROOT/Linea.app/Contents/MacOS/Linea")" = "arm64"
+          rm -rf "$EXTRACT_ROOT"
+
+          ls -lh Linea.zip
+
+      - name: Upload app ZIP
+        uses: actions/upload-artifact@v7
+        with:
+          name: Linea-macos-arm64-unsigned
+          path: Linea.zip
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: Linea-TestResults
+          path: TestResults.xcresult
+          if-no-files-found: warn
+          retention-days: 7
