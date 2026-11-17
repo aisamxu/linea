@@ -35,7 +35,7 @@ public struct TextRenderer {
             layout: layout,
             selections: selections
         )
-        drawText(in: context, lines: lines, layout: layout)
+        drawText(in: context, dirtyRect: dirtyRect, lines: lines, layout: layout)
         drawCaret(
             in: context,
             dirtyRect: dirtyRect,
@@ -69,7 +69,8 @@ public struct TextRenderer {
             let end = range.location + range.length
             guard end >= visibleStart, range.location <= visibleEnd else { continue }
 
-            for rect in layout.rects(for: range) {
+            // 只计算可见行，避免全选 10 万行时每帧遍历整个文档。
+            for rect in layout.rects(for: range, intersectingLines: lines) {
                 guard rect.intersects(dirtyRect) else { continue }
                 context.fill(rect)
             }
@@ -80,22 +81,33 @@ public struct TextRenderer {
 
     private func drawText(
         in context: CGContext,
+        dirtyRect: CGRect,
         lines: Range<Int>,
         layout: TextLayoutEngine
     ) {
         context.setFillColor(theme.text.cgColor)
+        // 只取与脏区域水平相交的片段；超长行不会为了绘制一行而排版整行。
+        let xRange = dirtyRect.minX...max(dirtyRect.minX, dirtyRect.maxX)
         for lineNumber in lines {
             let line = layout.layoutLine(number: lineNumber)
             guard !line.isEmpty else { continue }
 
+            let fragments = layout.fragments(
+                forLine: lineNumber,
+                intersecting: xRange
+            )
+            guard !fragments.isEmpty else { continue }
+
             context.saveGState()
             // isFlipped 视图中，文本空间的 +y 需要翻转成屏幕向上。
             context.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
-            context.textPosition = CGPoint(
-                x: 0,
-                y: layout.y(forLine: lineNumber) + line.ascent
-            )
-            CTLineDraw(line.line, context)
+            for fragment in fragments {
+                context.textPosition = CGPoint(
+                    x: fragment.x,
+                    y: layout.y(forLine: lineNumber) + fragment.ascent
+                )
+                CTLineDraw(fragment.line, context)
+            }
             context.restoreGState()
         }
     }

@@ -20,11 +20,19 @@ public protocol TextLayoutEngine: AnyObject {
     func lineNumber(atY y: CGFloat) -> Int
     /// 与矩形相交的行号范围（从 1 开始，半开）。
     func lines(in rect: CGRect) -> Range<Int>
-    /// 排版并缓存一行。
+    /// 排版并缓存一行。超长行只返回度量，片段按需生成。
     func layoutLine(number: Int) -> TextLine
+    /// 取与水平范围相交的可见片段；短行返回唯一片段，超长行只生成可见块。
+    func fragments(forLine line: Int, intersecting xRange: ClosedRange<CGFloat>) -> [TextFragment]
+    /// 行内 UTF-16 偏移对应的 x（相对行首）。
+    func x(forLine line: Int, localOffset: Int) -> CGFloat
+    /// x（相对行首）对应的行内 UTF-16 偏移。
+    func localOffset(forLine line: Int, atX x: CGFloat) -> Int
 
     /// 与 range 相交的逐行矩形，用于选区绘制。
     func rects(for range: NSRange) -> [CGRect]
+    /// 只计算与指定可见行范围相交的矩形，避免全选时遍历整个文档。
+    func rects(for range: NSRange, intersectingLines lineRange: Range<Int>) -> [CGRect]
     /// 插入点矩形（零宽 range 也会返回一个光标矩形）。
     func caretRect(for offset: Int) -> CGRect
     /// 点所在最接近的文本偏移。
