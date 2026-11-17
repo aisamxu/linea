@@ -35,6 +35,24 @@ struct EditorEngineTests {
         #expect(engine.lineRange(at: 1) == NSRange(location: 0, length: 0))
     }
 
+    @Test func onWillChangeFiresBeforeTextMutates() {
+        let engine = EditorEngine(text: "abc", selections: [.caret(at: 3)])
+        var observed: [String] = []
+        engine.onWillChange = { observed.append(engine.text) }
+
+        engine.insertText("d")
+        #expect(observed == ["abc"])
+
+        engine.undo()
+        #expect(observed == ["abc", "abcd"])
+
+        engine.redo()
+        #expect(observed == ["abc", "abcd", "abc"])
+
+        engine.load(text: "xyz")
+        #expect(observed == ["abc", "abcd", "abc", "abcd"])
+    }
+
     // MARK: - 键入与多光标
 
     @Test func insertTextAtSingleCaret() {

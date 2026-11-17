@@ -498,6 +498,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         performFindAction(.previousMatch)
     }
 
+    @objc func selectAllFindMatches(_ sender: Any?) {
+        session.selectedTab?.editor.selectAllFindMatches()
+    }
+
     @objc func selectNextOccurrence(_ sender: Any?) {
         guard let tab = session.selectedTab else { return }
         handleMultiCursorResult(tab.editor.selectNextOccurrence())
@@ -541,6 +545,9 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         case #selector(selectTabAction(_:)):
             // menuItem.tag 是 1 起的标签编号；超出现有标签数时禁用。
             return menuItem.tag >= 1 && menuItem.tag <= session.tabs.count
+        case #selector(selectAllFindMatches(_:)):
+            // 只有查找栏可见且已有匹配时才有意义。
+            return session.selectedTab?.editor.canSelectAllFindMatches ?? false
         case #selector(closeTabAction(_:)),
              #selector(saveDocument(_:)),
              #selector(saveDocumentAs(_:)),

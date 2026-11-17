@@ -18,6 +18,18 @@ final class EditorViewController: NSViewController {
     private var lineNumberRuler: LineNumberRulerView?
     private var pendingScrollOrigin: CGPoint?
 
+    private var finderMatchesObservation: NSKeyValueObservation?
+    private var findBarVisibleObservation: NSKeyValueObservation?
+    /// 查找栏搜索框的文本变化通知；只保留一个 observer。
+    private var findFieldObserver: NSObjectProtocol?
+    private weak var observedFindField: NSSearchField?
+    /// 查找器发布的全量增量匹配；非空时是绘制高亮的权威来源。
+    private var finderMatchRanges: [NSRange] = []
+    /// 搜索框文本变化后本地立即扫描出的匹配，用于等待查找器全量结果的空窗期。
+    private var quickMatchRanges: [NSRange] = []
+    /// 当前查找字符串，编辑文本后据此刷新本地高亮。
+    private var lastFindString = ""
+
     /// 退出写会话期间临时关闭编辑能力，防止快照之后的新修改丢失。
     private(set) var isEditingEnabled = true
 
@@ -128,7 +140,38 @@ final class EditorViewController: NSViewController {
         textFinder.client = textView
         textFinder.findBarContainer = scrollView
         textFinder.isIncrementalSearchingEnabled = true
-        textFinder.incrementalSearchingShouldDimContentView = true
+        // 系统“变暗内容视图”只对原生内容视图生效；自绘视图改为读取
+        // incrementalMatchRanges 自己绘制高亮（系统文档推荐路径）。
+        textFinder.incrementalSearchingShouldDimContentView = false
+
+        // 查找器在后台搜索完成时更新匹配范围（主队列），据此驱动自绘高亮。
+        finderMatchesObservation = textFinder.observe(
+            \.incrementalMatchRanges,
+            options: [.new]
+        ) { [weak self] finder, _ in
+            self?.updateFinderMatchRanges(
+                finder.incrementalMatchRanges.map(\.rangeValue)
+            )
+        }
+
+        // Escape 等路径由查找器自行收起查找栏，KVO 保证高亮同步清除。
+        findBarVisibleObservation = scrollView.observe(
+            \.isFindBarVisible,
+            options: [.new]
+        ) { [weak self] scrollView, _ in
+            guard let self else { return }
+            if scrollView.isFindBarVisible {
+                self.observeFindFieldIfNeeded()
+                self.applyFindHighlights()
+            } else {
+                self.clearFindHighlights()
+            }
+        }
+
+        // NSTextFinder 要求字符串修改前失效缓存，否则增量查找会继续用旧全文。
+        engine.onWillChange = { [weak self] in
+            self?.textFinder.noteClientStringWillChange()
+        }
     }
 
     /// 窗口尺寸变化后同步视口宽度；布局引擎按它决定横向滚动范围。
@@ -146,6 +189,8 @@ final class EditorViewController: NSViewController {
             if self.engine.isDirty, !self.document.isDirty {
                 self.document.isDirty = true
             }
+            // 文本变化后查找器的增量结果会滞后，先用本地扫描刷新高亮。
+            self.refreshQuickMatchesAfterTextChange()
         }
     }
 
@@ -188,6 +233,8 @@ final class EditorViewController: NSViewController {
         // 重载清空历史并保持 clean；旧选区按新文本长度 clamp。
         engine.load(text: newText, selections: selections, markClean: true)
         textView.reloadData()
+        // load 不触发 onChange，查找栏若仍打开需手动刷新高亮。
+        refreshQuickMatchesAfterTextChange()
 
         pendingScrollOrigin = origin
         DispatchQueue.main.async { [weak self] in
@@ -233,6 +280,128 @@ final class EditorViewController: NSViewController {
 
     func performFindAction(_ action: NSTextFinder.Action) {
         textFinder.performAction(action)
+
+        switch action {
+        case .showFindInterface, .showReplaceInterface:
+            // 查找栏恢复上次查找字符串时不会触发 textDidChange，需要主动接管。
+            observeFindFieldIfNeeded()
+        case .hideFindInterface:
+            clearFindHighlights()
+            lastFindString = ""
+        case .selectAll, .selectAllInSelection,
+             .nextMatch, .previousMatch,
+             .replace, .replaceAll, .replaceAndFind, .replaceAllInSelection:
+            // 这些动作以查找器当前匹配为准，去掉本地兜底，避免与选区/替换结果重叠。
+            quickMatchRanges = []
+            applyFindHighlights()
+        default:
+            break
+        }
+    }
+
+    /// 查找栏可见且已有匹配时，允许把全部查找结果转成多光标。
+    var canSelectAllFindMatches: Bool {
+        guard scrollView.isFindBarVisible else { return false }
+        return !effectiveFindMatchRanges.isEmpty
+    }
+
+    /// 把当前查找结果全部变成选区（多光标），随后可直接编辑。
+    func selectAllFindMatches() {
+        // 先让编辑器获得焦点。若在查找器写入全部选区后再改第一响应者，
+        // NSTextFinder 会把选区压回当前匹配（实测只剩最后一个匹配）。
+        focusEditorNow()
+        textFinder.performAction(.selectAll)
+        // 选区已表达全部匹配，不再叠加黄色高亮。
+        quickMatchRanges = []
+        finderMatchRanges = textFinder.incrementalMatchRanges.map(\.rangeValue)
+        applyFindHighlights()
+    }
+
+    private var effectiveFindMatchRanges: [NSRange] {
+        finderMatchRanges.isEmpty ? quickMatchRanges : finderMatchRanges
+    }
+
+    private func updateFinderMatchRanges(_ ranges: [NSRange]) {
+        finderMatchRanges = ranges
+        applyFindHighlights()
+    }
+
+    private func updateQuickMatches(for needle: String) {
+        lastFindString = needle
+        quickMatchRanges = FindMatchScanner.ranges(of: needle, in: engine.text)
+        applyFindHighlights()
+    }
+
+    /// 编辑文本后本地重新扫描；查找器的全量结果稍后到达时会覆盖本地结果。
+    private func refreshQuickMatchesAfterTextChange() {
+        guard scrollView.isFindBarVisible, !lastFindString.isEmpty else { return }
+        finderMatchRanges = []
+        quickMatchRanges = FindMatchScanner.ranges(
+            of: lastFindString,
+            in: engine.text
+        )
+        applyFindHighlights()
+    }
+
+    private func applyFindHighlights() {
+        guard scrollView.isFindBarVisible else {
+            textView.findHighlightRanges = []
+            return
+        }
+        textView.findHighlightRanges = effectiveFindMatchRanges
+    }
+
+    private func clearFindHighlights() {
+        finderMatchRanges = []
+        quickMatchRanges = []
+        textView.findHighlightRanges = []
+    }
+
+    /// 找到查找栏搜索框并监听文本变化；查找栏由 NSTextFinder 延迟创建，需重试一次。
+    private func observeFindFieldIfNeeded() {
+        if let field = findSearchField() {
+            attachFindFieldObserver(field)
+            updateQuickMatches(for: field.stringValue)
+            return
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let field = self.findSearchField() else { return }
+            self.attachFindFieldObserver(field)
+            self.updateQuickMatches(for: field.stringValue)
+        }
+    }
+
+    private func findSearchField() -> NSSearchField? {
+        func descendants(of view: NSView) -> [NSView] {
+            view.subviews.flatMap { [$0] + descendants(of: $0) }
+        }
+        return descendants(of: scrollView).first { $0 is NSSearchField } as? NSSearchField
+    }
+
+    private func attachFindFieldObserver(_ field: NSSearchField) {
+        guard observedFindField !== field else { return }
+        if let findFieldObserver {
+            NotificationCenter.default.removeObserver(findFieldObserver)
+        }
+        observedFindField = field
+        findFieldObserver = NotificationCenter.default.addObserver(
+            forName: NSControl.textDidChangeNotification,
+            object: field,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self,
+                  let field = notification.object as? NSSearchField
+            else {
+                return
+            }
+            self.updateQuickMatches(for: field.stringValue)
+        }
+    }
+
+    deinit {
+        if let findFieldObserver {
+            NotificationCenter.default.removeObserver(findFieldObserver)
+        }
     }
 
     // MARK: - 多光标

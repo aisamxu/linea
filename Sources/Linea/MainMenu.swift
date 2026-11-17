@@ -171,6 +171,14 @@ enum MainMenu {
             "g",
             [.command, .shift]
         ))
+        findMenu.addItem(.separator())
+        // 把查找栏当前结果全部转为多选区，随后可直接多光标编辑。
+        findMenu.addItem(item(
+            "Select All Matches",
+            #selector(EditorWindowController.selectAllFindMatches(_:)),
+            "g",
+            [.command, .option]
+        ))
 
         let findItem = NSMenuItem(title: "Find", action: nil, keyEquivalent: "")
         findItem.submenu = findMenu
