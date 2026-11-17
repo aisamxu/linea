@@ -104,16 +104,16 @@ swift test --package-path Packages/LineaTextUI
 
 ## 版本与标签
 
-当前正式版本为 **1.1.0**，版本号遵循语义化版本。`main` 已启用保护分支，禁止直接 push、强制 push 和删除分支，变更必须通过 PR 合并；PR 会运行 LineaCore/LineaTextUI 与 App 测试，推送 `v*` tag 时额外构建 Release、做 ad-hoc 签名并生成 DMG。发布时在通过 CI 的 `main` 提交上创建 annotated tag `vMAJOR.MINOR.PATCH`（本次为 `v1.1.0`）并推送；随后使用该 tag 创建 GitHub Release，并附加 CI 构建的 DMG 与 SHA-256 文件。
+当前正式版本为 **1.1.1**，版本号遵循语义化版本。`main` 已启用保护分支，禁止直接 push、强制 push 和删除分支，变更必须通过 PR 合并；PR 会运行 LineaCore/LineaTextUI 与 App 测试，推送 `v*` tag 时额外构建 Release、做 ad-hoc 签名并生成 DMG。发布时在通过 CI 的 `main` 提交上创建 annotated tag `vMAJOR.MINOR.PATCH`（本次为 `v1.1.1`）并推送；随后使用该 tag 创建 GitHub Release，并附加 CI 构建的 DMG 与 SHA-256 文件。
 
 ## 下载 App
 
-正式版本发布在 GitHub Releases 页面，附件是由 CI 构建并 ad-hoc 签名的 `Linea-1.1.0-macos-arm64.dmg` 和对应的 `Linea-1.1.0-macos-arm64.dmg.sha256`；也可以在 Actions 页面下载最近一次 CI artifact。
+正式版本发布在 GitHub Releases 页面，附件是由 CI 构建并 ad-hoc 签名的 `Linea-1.1.1-macos-arm64.dmg` 和对应的 `Linea-1.1.1-macos-arm64.dmg.sha256`；也可以在 Actions 页面下载最近一次 CI artifact。
 
 下载后建议先校验 SHA-256：
 
 ```bash
-shasum -a 256 -c Linea-1.1.0-macos-arm64.dmg.sha256
+shasum -a 256 -c Linea-1.1.1-macos-arm64.dmg.sha256
 ```
 
 安装步骤：
@@ -157,7 +157,7 @@ shasum -a 256 -c Linea-1.1.0-macos-arm64.dmg.sha256
 - [ ] ⌘+ / ⌘- / ⌘0 可缩放字号，重启后仍保持；缩放不改变选区与文档内容。
 - [ ] 单光标与多光标下的中文输入法组合输入可用，或已记录限制。
 - [ ] 约 10 MB / 10 万行文本可打开、滚动、编辑、退出保存和恢复；记录行号与滚动响应。
-- [ ] DMG 可挂载，根目录包含 `Linea.app` 和指向 `/Applications` 的符号链接；`.app` 为 arm64、版本 1.1.0/build 7、最低系统版本 14.0，ad-hoc 签名校验通过，图标在 Dock/Finder 中正确显示。
+- [ ] DMG 可挂载，根目录包含 `Linea.app` 和指向 `/Applications` 的符号链接；`.app` 为 arm64、版本 1.1.1/build 8、最低系统版本 14.0，ad-hoc 签名校验通过，图标在 Dock/Finder 中正确显示。
 - [ ] `.sha256` 校验通过。
 - [ ] 从浏览器下载后首次打开不再显示“已损坏”，macOS 14 可通过右键“打开”，macOS 15+ 可通过“系统设置 > 隐私与安全性 > 仍要打开”。
 - [ ] 重启后 `consumed.json` 和旧的 session 目录被清理。
