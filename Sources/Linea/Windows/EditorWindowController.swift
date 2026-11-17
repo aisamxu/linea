@@ -10,6 +10,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     var isTerminating = false
     var onClosed: ((EditorWindowController) -> Void)?
+    /// 拖入文件时交给 WindowManager 打开；窗口层与各编辑器共用这个入口。
+    var onOpenFileURLs: (([URL]) -> Void)?
 
     private var tabBarHostingView: NSHostingView<TabBarView>?
     private var cancellables = Set<AnyCancellable>()
@@ -52,6 +54,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
         window.setFrame(desiredFrame, display: false)
         selectedTabDidChange(force: true)
+        installFileDropHandlers()
     }
 
     @available(*, unavailable)
@@ -62,7 +65,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     // MARK: - UI 构建
 
     private func setupContent() {
-        let contentView = NSView()
+        let contentView = FileDropContainerView()
         let rootViewController = NSViewController()
         rootViewController.view = contentView
         contentViewController = rootViewController
@@ -104,6 +107,26 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.selectedTabDidChange() }
             .store(in: &cancellables)
+    }
+
+    // MARK: - 拖入文件
+
+    /// 窗口层与各编辑器都转发到同一个打开入口。
+    private func installFileDropHandlers() {
+        (window?.contentView as? FileDropContainerView)?.onOpenFileURLs = {
+            [weak self] urls in
+            self?.onOpenFileURLs?(urls)
+        }
+        for tab in session.tabs {
+            attachFileDropHandler(to: tab)
+        }
+    }
+
+    /// 每个标签的编辑器独立接收拖入，切换标签后行为一致。
+    private func attachFileDropHandler(to tab: EditorTab) {
+        tab.editor.onOpenFileURLs = { [weak self] urls in
+            self?.onOpenFileURLs?(urls)
+        }
     }
 
     private func selectedTabDidChange(force: Bool = false) {
@@ -148,6 +171,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     @discardableResult
     func newTab() -> EditorTab {
         let tab = makeUntitledTab()
+        attachFileDropHandler(to: tab)
         session.addTab(tab)
         window?.makeKeyAndOrderFront(nil)
         selectedTabDidChange()
@@ -155,6 +179,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
 
     func addTab(_ tab: EditorTab, select: Bool = true) {
+        attachFileDropHandler(to: tab)
         session.addTab(tab, select: select)
         if select {
             window?.makeKeyAndOrderFront(nil)

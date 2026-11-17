@@ -40,6 +40,9 @@ final class WindowManager {
         controller.onClosed = { [weak self] closedController in
             self?.windowControllers.removeAll { $0 === closedController }
         }
+        controller.onOpenFileURLs = { [weak self] urls in
+            self?.openFiles(urls)
+        }
 
         windowControllers.append(controller)
 

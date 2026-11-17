@@ -29,7 +29,8 @@ struct LineaTextViewDragAndDropTests {
     private func makeDraggingInfo(
         _ text: String,
         at location: CGPoint,
-        types: [NSPasteboard.PasteboardType] = [.string]
+        types: [NSPasteboard.PasteboardType] = [.string],
+        fileURL: URL = URL(fileURLWithPath: "/tmp/linea-drop.txt")
     ) -> DraggingInfoStub {
         let pasteboard = NSPasteboard(
             name: NSPasteboard.Name("linea-test-\(UUID().uuidString)")
@@ -39,10 +40,7 @@ struct LineaTextViewDragAndDropTests {
             pasteboard.setString(text, forType: .string)
         }
         if types.contains(.fileURL) {
-            pasteboard.setString(
-                "file:///tmp/linea-drop.txt",
-                forType: .fileURL
-            )
+            pasteboard.writeObjects([fileURL as NSURL])
         }
         return DraggingInfoStub(pasteboard: pasteboard, location: location)
     }
@@ -79,7 +77,28 @@ struct LineaTextViewDragAndDropTests {
         #expect(view.dropInsertionOffset == nil)
     }
 
-    @Test func fileURLDropIsRejected() {
+    @Test func fileURLDropOpensFileWithoutEditing() {
+        let view = makeView("abc")
+        var opened: [URL] = []
+        view.onOpenFileURLs = { opened = $0 }
+        let info = makeDraggingInfo(
+            "",
+            at: point(for: 1, in: view),
+            types: [.fileURL]
+        )
+
+        #expect(view.draggingEntered(info) == .copy)
+        // 文件拖入不显示正文落点指示。
+        #expect(view.dropInsertionOffset == nil)
+        #expect(view.prepareForDragOperation(info))
+        #expect(view.performDragOperation(info))
+
+        #expect(opened.map(\.lastPathComponent) == ["linea-drop.txt"])
+        #expect(view.engine.text == "abc")
+        #expect(view.engine.history.undoCount == 0)
+    }
+
+    @Test func fileURLDropWithoutHandlerIsRejected() {
         let view = makeView("abc")
         let info = makeDraggingInfo(
             "",
@@ -91,6 +110,23 @@ struct LineaTextViewDragAndDropTests {
         #expect(!view.prepareForDragOperation(info))
         #expect(!view.performDragOperation(info))
         #expect(view.engine.text == "abc")
+    }
+
+    @Test func binaryFileURLDropIsRejected() {
+        let view = makeView("abc")
+        var opened: [URL] = []
+        view.onOpenFileURLs = { opened = $0 }
+        let info = makeDraggingInfo(
+            "",
+            at: point(for: 1, in: view),
+            types: [.fileURL],
+            fileURL: URL(fileURLWithPath: "/tmp/linea-drop.png")
+        )
+
+        #expect(view.draggingEntered(info) == [])
+        #expect(!view.prepareForDragOperation(info))
+        #expect(!view.performDragOperation(info))
+        #expect(opened.isEmpty)
     }
 
     @Test func dropIsRejectedWhenNotEditable() {
