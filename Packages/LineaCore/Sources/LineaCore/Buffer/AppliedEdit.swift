@@ -11,6 +11,11 @@ public struct AppliedEdit: Equatable, Sendable {
     public let removedText: String
     public let replacement: String
 
+    /// 替换文本的 UTF-16 长度。
+    public var replacementLength: Int {
+        rangeInResult.length
+    }
+
     public init(
         rangeInBase: NSRange,
         rangeInResult: NSRange,
