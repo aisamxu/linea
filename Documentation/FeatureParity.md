@@ -179,3 +179,60 @@
 - `AppDelegate.detectTestMode()` 早退，不安装主菜单、不写真实会话。
 - 新引擎/布局层不得在初始化、静态变量或启动路径读写真实 `~/Library/Application Support/Linea`。
 - 保留 0700/0600 权限断言与草稿路径穿越防护测试。
+
+## 15. 编辑命令覆盖矩阵（Phase 3）
+
+`LineaTextView` 通过 `NSStandardKeyBindingResponding`、`NSTextInputClient` 与 responder chain 接管下表命令。
+未列出的命令一律视为“无入口、不实现”，避免键盘绑定静默失效却无人知晓；实现位于
+`Packages/LineaTextUI/Sources/LineaTextUI/LineaTextView.swift`，纯移动逻辑位于 `TextInputController.swift`，
+行为测试位于 `LineaTextViewEditingTests.swift`。
+
+### 已实现
+
+| 分类 | 命令 | 行为 |
+| --- | --- | --- |
+| 插入 | `insertText:replacementRange:`、`insertText:` | 所有选区一次事务替换；IME 提交同样走这里 |
+| 插入 | `insertNewline:` | 插入 LF（`\n`） |
+| 插入 | `insertLineBreak:` | ⇧Return，插入 U+2028 |
+| 插入 | `insertParagraphSeparator:` | ⌃Return，插入 U+2029 |
+| 插入 | `insertTab:` / `insertBacktab:` | 插入 HT / U+0019（与 1.0.2 一致，不改为空格） |
+| 插入 | `insertNewlineIgnoringFieldEditor:`、`insertTabIgnoringFieldEditor:`、单双引号 ignoring substitution | 与普通插入相同 |
+| 删除 | `deleteBackward:` / `deleteForward:` | 按 grapheme 删除；CRLF 作为整体跨过 |
+| 删除 | `deleteBackwardByDecomposingPreviousCharacter:` | 与 `deleteBackward:` 相同 |
+| 删除 | `deleteWordBackward:` / `deleteWordForward:` | Unicode 词边界删除 |
+| 删除 | `deleteToBeginningOfLine:` / `deleteToEndOfLine:` | 行首删除从行首到光标；行尾删除从光标到换行符之前 |
+| 删除 | `deleteToBeginningOfParagraph:` / `deleteToEndOfParagraph:` | 无软换行，与行命令相同 |
+| 删除 | `delete:` | 删除所有非空选区 |
+| 移动 | `moveLeft:`/`moveRight:`/`moveBackward:`/`moveForward:` | 按 grapheme 移动；有选区时只折叠 |
+| 移动 | `moveWordLeft:`/`moveWordRight:`/`moveWordBackward:`/`moveWordForward:` | Unicode 词边界移动 |
+| 移动 | `moveToBeginningOfLine:`/`moveToEndOfLine:`/`moveToLeftEndOfLine:`/`moveToRightEndOfLine:` | 行首/行尾（行尾停在终止符之前） |
+| 移动 | `moveToBeginningOfParagraph:`/`moveToEndOfParagraph:` | 与行命令相同 |
+| 移动 | `moveToBeginningOfDocument:`/`moveToEndOfDocument:` | 文档首/尾 |
+| 移动 | `moveUp:`/`moveDown:`/`pageUp:`/`pageDown:` | 固定行高垂直移动，连续移动保留原始 x |
+| 移动 | 以上命令的全部 `...AndModifySelection:` 变体 | Shift 扩展选区；保存锚点，反向移动可回缩 |
+| 滚动 | `scrollPageUp:`/`PageDown:`/`LineUp:`/`LineDown:`/`scrollToBeginningOfDocument:`/`EndOfDocument:` | 只滚动视口，不移动光标 |
+| 滚动 | `centerSelectionInVisibleArea:` | 把主光标滚入可见区域 |
+| 选择 | `selectAll:` | 全选 |
+| 选择 | `selectWord:` / `selectLine:` / `selectParagraph:` | 双击/三击背后的命令；段落等于行 |
+| 选择 | `cancelOperation:` | Esc 折叠多光标为主选区；组合中不折叠 |
+| 撤销 | `undo:` / `redo:` | 直接走 `EditorEngine` 历史，不依赖 `NSUndoManager` |
+| 剪贴板 | `cut:` / `copy:` / `paste:` / `pasteAsPlainText:` | Copy 写 RTF + 纯文本；Cut = Copy + 一次删除事务；Paste 只读 `.string` |
+| 鼠标 | `mouseDown:` / `mouseDragged:` / `mouseUp:` / `menuForEvent:` | 单击、拖拽、双击选词、三击选行、Shift 扩展、⌘+点击增减光标、⇧⌃+点击追加光标、边缘自动滚动；右键菜单与 1.0.2 一致 |
+
+### 明确不做
+
+| 命令 | 原因 |
+| --- | --- |
+| `changeCaseOfLetter:`、`uppercaseWord:`、`lowercaseWord:`、`capitalizeWord:` | 产品无菜单入口 |
+| `transpose:`、`transposeWords:` | 产品无菜单入口 |
+| `yank:` | Emacs 键位，产品无入口 |
+| `indent:` | 无菜单入口；Tab 直接插入制表符 |
+| `complete:`、`quickLookPreviewItems:` | 无补全 UI、无预览入口 |
+| `insertContainerBreak:` | 无入口 |
+| `NSServicesMenuRequestor` / 朗读菜单 | 产品无入口 |
+
+### 已知测试边界
+
+- 真实键位要经过 `NSTextInputContext` 分发，无法在无 App 事件循环的 SPM 测试中稳定模拟；
+  命令层与插入层由直接调用覆盖，真实键入在 Phase 5 App 集成时人工验收。
+- 鼠标事件中的坐标换算、拖拽自动滚动同样只在控制器/人工验收覆盖，单元测试直接调用 `select(at:)`。
