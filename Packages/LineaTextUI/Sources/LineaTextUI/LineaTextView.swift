@@ -3,11 +3,13 @@ import CoreGraphics
 import Foundation
 import LineaCore
 
-/// 自建只读文本视图。
+/// 可编辑的自绘文本视图。
 ///
-/// Phase 2 先验证布局、滚动与绘制；编辑/输入法/查找在后续阶段接入。
-/// 视图只持有布局缓存和滚动状态，文本与选区始终从 `EditorEngine`/调用方读取。
-public final class LineaTextView: NSView {
+/// - 文本、选区、撤销状态的唯一事实源是 `EditorEngine`；视图只保留布局缓存、
+///   拖拽与光标闪烁等临时 UI 状态。
+/// - 所有编辑最终都经过引擎事务：一次按键、粘贴、多光标输入只产生一个历史条目。
+/// - 光标与选区在同一次 `draw` 中绘制，不创建逐光标子视图或 layer。
+public final class LineaTextView: NSView, NSTextInputClient, TextSurface {
     public let engine: EditorEngine
     public let layoutEngine: CoreTextLayoutEngine
 
@@ -19,15 +21,12 @@ public final class LineaTextView: NSView {
         }
     }
 
-    /// 当前选区；最后一个为主选区。只影响绘制，不修改引擎。
-    public var selections: [TextSelection] = [] {
-        didSet {
-            guard selections != oldValue else { return }
-            invalidateSelectionDisplay()
-        }
-    }
+    /// 视图处理完一次引擎变更后的外部回调。
+    ///
+    /// `LineaTextView` 接管了 `engine.onChange`，控制器应设置本属性而不是直接覆盖引擎回调。
+    public var onChange: ((EditorChange) -> Void)?
 
-    /// 光标闪烁状态由控制器驱动；Phase 2 默认不画光标。
+    /// 光标闪烁状态。视图成为第一响应者后由 Timer 驱动；测试可手动设置。
     public var isCaretVisible = false {
         didSet {
             guard isCaretVisible != oldValue else { return }
@@ -37,8 +36,57 @@ public final class LineaTextView: NSView {
 
     public weak var lineNumberRuler: LineNumberRulerView?
 
+    /// 编辑开关。关闭时引擎拒绝所有修改，移动和选择仍然可用。
+    public var isEditable: Bool {
+        get { engine.isEditable }
+        set {
+            engine.isEditable = newValue
+            if !newValue {
+                engine.unmarkText()
+                stopCaretBlinking()
+            }
+        }
+    }
+
+    /// 当前选区，最后一个为主选区；读写都直接落到引擎。
+    public var selections: [TextSelection] {
+        get { engine.selections }
+        set {
+            guard engine.setSelections(newValue) else { return }
+            verticalAnchorXs = nil
+            extendAnchors = nil
+            selectionDisplayDidChange()
+        }
+    }
+
+    /// 所有非空选区的文本，按文档顺序用换行连接（与 1.0.2 的复制行为一致）。
+    public var selectedText: String {
+        engine.selections
+            .filter { $0.range.length > 0 }
+            .sorted { $0.range.location < $1.range.location }
+            .map { engine.substring(in: $0.range) }
+            .joined(separator: "\n")
+    }
+
+    /// 视图已经同步到的引擎版本；绘制前发现落后会自愈重建布局缓存。
+    public private(set) var displayedVersion: UInt64
+
     private var renderer: TextRenderer
     private var clipObservation: NSObjectProtocol?
+    private var previousOnChange: ((EditorChange) -> Void)?
+
+    private var caretBlinkTimer: Timer?
+
+    private var isDraggingSelection = false
+    private var dragAnchorOffset: Int?
+    private var dragPoint: CGPoint = .zero
+    private var dragScrollTimer: Timer?
+
+    /// 连续垂直移动时保留每个光标的原始 x，避免经过短行后列位置漂移。
+    private var verticalAnchorXs: [CGFloat]?
+
+    /// 连续 Shift 扩展时保存每个选区的固定锚点，方向反转不会漂移。
+    private var extendAnchors: [Int]?
 
     public init(engine: EditorEngine, theme: TextTheme = .standard) {
         self.engine = engine
@@ -50,11 +98,21 @@ public final class LineaTextView: NSView {
             tabInterval: theme.tabInterval,
             lineHeightMultiple: theme.lineHeightMultiple
         )
+        self.displayedVersion = engine.version
         super.init(frame: .zero)
 
         wantsLayer = true
         layerContentsRedrawPolicy = .onSetNeedsDisplay
         autoresizingMask = []
+
+        // 视图接管引擎回调：先更新布局/几何，再转发给外部控制器。
+        previousOnChange = engine.onChange
+        engine.onChange = { [weak self] change in
+            guard let self else { return }
+            self.apply(change: change)
+            self.previousOnChange?(change)
+            self.onChange?(change)
+        }
     }
 
     @available(*, unavailable)
@@ -66,6 +124,8 @@ public final class LineaTextView: NSView {
         if let clipObservation {
             NotificationCenter.default.removeObserver(clipObservation)
         }
+        caretBlinkTimer?.invalidate()
+        dragScrollTimer?.invalidate()
     }
 
     public override var isFlipped: Bool { true }
@@ -88,6 +148,9 @@ public final class LineaTextView: NSView {
     /// 文本内容或字体变化后调用：清空行缓存并更新文档尺寸。
     public func reloadData() {
         layoutEngine.invalidateLayout()
+        displayedVersion = engine.version
+        verticalAnchorXs = nil
+        extendAnchors = nil
         updateDocumentFrame()
         lineNumberRuler?.refresh()
         needsDisplay = true
@@ -119,6 +182,52 @@ public final class LineaTextView: NSView {
         scrollRangeToVisible(NSRange(location: offset, length: 0))
     }
 
+    // MARK: - 引擎变更同步
+
+    /// 引擎完成一次编辑后的视图同步入口。
+    public func apply(change: EditorChange) {
+        // 文本变化会让所有行的内容与宽度失效；下一帧只重排可见行。
+        layoutEngine.invalidateLayout()
+        displayedVersion = change.versionAfter
+        verticalAnchorXs = nil
+        extendAnchors = nil
+        updateDocumentFrame()
+        if change.lineCountBefore != change.lineCountAfter {
+            lineNumberRuler?.refresh()
+        }
+
+        resetCaretBlink()
+        needsDisplay = true
+
+        // 编辑后只把主光标滚入可见区域；多光标不抢滚动。
+        if let primary = engine.selections.last {
+            scrollRangeToVisible(offset: primary.insertionOffset)
+        }
+    }
+
+    public override func draw(_ dirtyRect: CGRect) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        healIfVersionMismatched()
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            renderer.draw(
+                in: context,
+                dirtyRect: dirtyRect,
+                layout: layoutEngine,
+                selections: engine.selections,
+                caretVisible: isCaretVisible
+            )
+        }
+    }
+
+    /// RELEASE 下若外部绕过视图直接改了引擎，绘制前重建缓存，禁止带病渲染。
+    private func healIfVersionMismatched() {
+        guard displayedVersion != engine.version else { return }
+        layoutEngine.invalidateLayout()
+        displayedVersion = engine.version
+        updateDocumentFrame()
+        lineNumberRuler?.refresh()
+    }
+
     // MARK: - 视图生命周期
 
     public override func viewDidMoveToSuperview() {
@@ -137,20 +246,931 @@ public final class LineaTextView: NSView {
         needsDisplay = true
     }
 
-    public override func draw(_ dirtyRect: CGRect) {
-        guard let context = NSGraphicsContext.current?.cgContext else { return }
-        effectiveAppearance.performAsCurrentDrawingAppearance {
-            renderer.draw(
-                in: context,
-                dirtyRect: dirtyRect,
-                layout: layoutEngine,
-                selections: selections,
-                caretVisible: isCaretVisible
-            )
+    public override func becomeFirstResponder() -> Bool {
+        isCaretVisible = true
+        scheduleCaretTimer()
+        return true
+    }
+
+    public override func resignFirstResponder() -> Bool {
+        stopCaretBlinking()
+        return true
+    }
+
+    // MARK: - 键盘输入
+
+    public override func keyDown(with event: NSEvent) {
+        // 普通文本走 insertText(_:replacementRange:)；命令走标准键位绑定。
+        interpretKeyEvents([event])
+    }
+
+    public override func doCommand(by selector: Selector) {
+        // 标准键位绑定方法都实现在本类；这里兜底转发，
+        // 不认识的命令交给 NSResponder 默认实现（通常是提示音）。
+        guard selector != #selector(doCommand(by:)) else { return }
+        if responds(to: selector) {
+            perform(selector, with: nil)
         }
     }
 
+    public func insertText(_ string: Any, replacementRange: NSRange) {
+        let text = (string as? NSAttributedString)?.string
+            ?? (string as? String)
+            ?? ""
+        guard !text.isEmpty else { return }
+
+        resetCaretBlink()
+        if engine.isComposing {
+            // 输入法提交：把最终文本作为一次事务写入主选区。
+            engine.insertText(text)
+            return
+        }
+        if replacementRange.location != NSNotFound {
+            engine.replace(range: replacementRange, with: text, origin: .typing)
+        } else {
+            engine.insertText(text)
+        }
+    }
+
+    /// 标准键位绑定的一参版本，等价于没有替换范围的输入。
+    public override func insertText(_ insertString: Any?) {
+        insertText(
+            insertString as Any,
+            replacementRange: NSRange(location: NSNotFound, length: 0)
+        )
+    }
+
+    // MARK: 插入命令
+
+    public override func insertNewline(_ sender: Any?) { insertText("\n") }
+    public override func insertLineBreak(_ sender: Any?) { insertText("\u{2028}") }
+    public override func insertParagraphSeparator(_ sender: Any?) { insertText("\u{2029}") }
+    public override func insertTab(_ sender: Any?) { insertText("\t") }
+    public override func insertBacktab(_ sender: Any?) { insertText("\u{0019}") }
+    public override func insertNewlineIgnoringFieldEditor(_ sender: Any?) { insertText("\n") }
+    public override func insertTabIgnoringFieldEditor(_ sender: Any?) { insertText("\t") }
+    public override func insertSingleQuoteIgnoringSubstitution(_ sender: Any?) { insertText("'") }
+    public override func insertDoubleQuoteIgnoringSubstitution(_ sender: Any?) { insertText("\"") }
+
+    // MARK: 删除命令
+
+    public override func deleteBackward(_ sender: Any?) {
+        engine.delete(.backward, .character)
+    }
+
+    public override func deleteForward(_ sender: Any?) {
+        engine.delete(.forward, .character)
+    }
+
+    public override func deleteBackwardByDecomposingPreviousCharacter(_ sender: Any?) {
+        engine.delete(.backward, .character)
+    }
+
+    public override func deleteWordBackward(_ sender: Any?) {
+        engine.delete(.backward, .word)
+    }
+
+    public override func deleteWordForward(_ sender: Any?) {
+        engine.delete(.forward, .word)
+    }
+
+    public override func deleteToBeginningOfLine(_ sender: Any?) {
+        engine.delete(.backward, .line)
+    }
+
+    public override func deleteToEndOfLine(_ sender: Any?) {
+        engine.delete(.forward, .line)
+    }
+
+    public override func deleteToBeginningOfParagraph(_ sender: Any?) {
+        engine.delete(.backward, .line)
+    }
+
+    public override func deleteToEndOfParagraph(_ sender: Any?) {
+        engine.delete(.forward, .line)
+    }
+
+    @objc public func delete(_ sender: Any?) {
+        engine.deleteSelections()
+    }
+
+    // MARK: 移动命令
+
+    private func move(_ movement: TextMovement, extendSelection: Bool) {
+        var anchors: [Int]?
+        if extendSelection {
+            if extendAnchors?.count != engine.selections.count {
+                extendAnchors = engine.selections.map {
+                    TextInputController.inferredAnchor(
+                        for: $0,
+                        movement: movement
+                    )
+                }
+            }
+            anchors = extendAnchors
+        }
+        let updated = TextInputController.moveSelections(
+            engine.selections,
+            movement: movement,
+            extendSelection: extendSelection,
+            engine: engine,
+            anchors: anchors
+        )
+        commitSelections(
+            updated,
+            source: .keyboard,
+            reveal: true,
+            keepExtendAnchors: extendSelection
+        )
+    }
+
+    public override func moveLeft(_ sender: Any?) { move(.characterBackward, extendSelection: false) }
+    public override func moveRight(_ sender: Any?) { move(.characterForward, extendSelection: false) }
+    public override func moveBackward(_ sender: Any?) { move(.characterBackward, extendSelection: false) }
+    public override func moveForward(_ sender: Any?) { move(.characterForward, extendSelection: false) }
+    public override func moveWordLeft(_ sender: Any?) { move(.wordBackward, extendSelection: false) }
+    public override func moveWordRight(_ sender: Any?) { move(.wordForward, extendSelection: false) }
+    public override func moveWordBackward(_ sender: Any?) { move(.wordBackward, extendSelection: false) }
+    public override func moveWordForward(_ sender: Any?) { move(.wordForward, extendSelection: false) }
+    public override func moveToBeginningOfLine(_ sender: Any?) { move(.lineStart, extendSelection: false) }
+    public override func moveToEndOfLine(_ sender: Any?) { move(.lineEnd, extendSelection: false) }
+    public override func moveToLeftEndOfLine(_ sender: Any?) { move(.lineStart, extendSelection: false) }
+    public override func moveToRightEndOfLine(_ sender: Any?) { move(.lineEnd, extendSelection: false) }
+    public override func moveToBeginningOfParagraph(_ sender: Any?) { move(.lineStart, extendSelection: false) }
+    public override func moveToEndOfParagraph(_ sender: Any?) { move(.lineEnd, extendSelection: false) }
+    public override func moveToBeginningOfDocument(_ sender: Any?) { move(.documentStart, extendSelection: false) }
+    public override func moveToEndOfDocument(_ sender: Any?) { move(.documentEnd, extendSelection: false) }
+
+    public override func moveLeftAndModifySelection(_ sender: Any?) { move(.characterBackward, extendSelection: true) }
+    public override func moveRightAndModifySelection(_ sender: Any?) { move(.characterForward, extendSelection: true) }
+    public override func moveBackwardAndModifySelection(_ sender: Any?) { move(.characterBackward, extendSelection: true) }
+    public override func moveForwardAndModifySelection(_ sender: Any?) { move(.characterForward, extendSelection: true) }
+    public override func moveWordLeftAndModifySelection(_ sender: Any?) { move(.wordBackward, extendSelection: true) }
+    public override func moveWordRightAndModifySelection(_ sender: Any?) { move(.wordForward, extendSelection: true) }
+    public override func moveWordBackwardAndModifySelection(_ sender: Any?) { move(.wordBackward, extendSelection: true) }
+    public override func moveWordForwardAndModifySelection(_ sender: Any?) { move(.wordForward, extendSelection: true) }
+    public override func moveToBeginningOfLineAndModifySelection(_ sender: Any?) { move(.lineStart, extendSelection: true) }
+    public override func moveToEndOfLineAndModifySelection(_ sender: Any?) { move(.lineEnd, extendSelection: true) }
+    public override func moveToLeftEndOfLineAndModifySelection(_ sender: Any?) { move(.lineStart, extendSelection: true) }
+    public override func moveToRightEndOfLineAndModifySelection(_ sender: Any?) { move(.lineEnd, extendSelection: true) }
+    public override func moveToBeginningOfParagraphAndModifySelection(_ sender: Any?) { move(.lineStart, extendSelection: true) }
+    public override func moveToEndOfParagraphAndModifySelection(_ sender: Any?) { move(.lineEnd, extendSelection: true) }
+    public override func moveParagraphBackwardAndModifySelection(_ sender: Any?) { move(.lineStart, extendSelection: true) }
+    public override func moveParagraphForwardAndModifySelection(_ sender: Any?) { move(.lineEnd, extendSelection: true) }
+    public override func moveToBeginningOfDocumentAndModifySelection(_ sender: Any?) { move(.documentStart, extendSelection: true) }
+    public override func moveToEndOfDocumentAndModifySelection(_ sender: Any?) { move(.documentEnd, extendSelection: true) }
+
+    public override func moveUp(_ sender: Any?) {
+        moveVertically(direction: -1, extendSelection: false)
+    }
+
+    public override func moveDown(_ sender: Any?) {
+        moveVertically(direction: 1, extendSelection: false)
+    }
+
+    public override func moveUpAndModifySelection(_ sender: Any?) {
+        moveVertically(direction: -1, extendSelection: true)
+    }
+
+    public override func moveDownAndModifySelection(_ sender: Any?) {
+        moveVertically(direction: 1, extendSelection: true)
+    }
+
+    public override func pageUp(_ sender: Any?) {
+        moveVertically(direction: -1, extendSelection: false, distance: pageStep)
+    }
+
+    public override func pageDown(_ sender: Any?) {
+        moveVertically(direction: 1, extendSelection: false, distance: pageStep)
+    }
+
+    public override func pageUpAndModifySelection(_ sender: Any?) {
+        moveVertically(direction: -1, extendSelection: true, distance: pageStep)
+    }
+
+    public override func pageDownAndModifySelection(_ sender: Any?) {
+        moveVertically(direction: 1, extendSelection: true, distance: pageStep)
+    }
+
+    public override func centerSelectionInVisibleArea(_ sender: Any?) {
+        guard let primary = engine.selections.last else { return }
+        scrollRangeToVisible(offset: primary.insertionOffset)
+    }
+
+    // MARK: 滚动命令
+
+    public override func scrollPageUp(_ sender: Any?) { scroll(by: -pageStep) }
+    public override func scrollPageDown(_ sender: Any?) { scroll(by: pageStep) }
+    public override func scrollLineUp(_ sender: Any?) { scroll(by: -layoutEngine.lineHeight) }
+    public override func scrollLineDown(_ sender: Any?) { scroll(by: layoutEngine.lineHeight) }
+
+    public override func scrollToBeginningOfDocument(_ sender: Any?) {
+        scrollTo(y: 0)
+    }
+
+    public override func scrollToEndOfDocument(_ sender: Any?) {
+        scrollTo(y: .greatestFiniteMagnitude)
+    }
+
+    // MARK: 选区命令
+
+    public override func selectAll(_ sender: Any?) {
+        commitSelections(
+            [TextSelection(range: NSRange(location: 0, length: engine.length))],
+            source: .command
+        )
+    }
+
+    public override func selectWord(_ sender: Any?) {
+        let caret = engine.primarySelection.insertionOffset
+        guard let range = engine.wordRange(at: caret, mode: .word),
+              range.length > 0
+        else {
+            return
+        }
+        commitSelections([TextSelection(range: range)], source: .command)
+    }
+
+    public override func selectLine(_ sender: Any?) {
+        let line = engine.lineNumber(at: engine.primarySelection.range.location)
+        commitSelections(
+            [TextSelection(range: engine.lineContentRange(at: line))],
+            source: .command
+        )
+    }
+
+    public override func selectParagraph(_ sender: Any?) {
+        selectLine(sender)
+    }
+
+    public override func cancelOperation(_ sender: Any?) {
+        _ = collapseSelectionsIfNeeded()
+    }
+
+    /// Esc：把多光标折叠为主选区；只有一个选区时返回 false 交给上层。
+    @discardableResult
+    public func collapseSelectionsIfNeeded() -> Bool {
+        guard !engine.isComposing,
+              engine.selections.count > 1,
+              let primary = engine.selections.last
+        else {
+            return false
+        }
+        commitSelections([primary], source: .command, reveal: true)
+        return true
+    }
+
+    // MARK: - 撤销 / 重做
+
+    @objc public func undo(_ sender: Any?) {
+        resetCaretBlink()
+        engine.undo()
+    }
+
+    @objc public func redo(_ sender: Any?) {
+        resetCaretBlink()
+        engine.redo()
+    }
+
+    // MARK: - 剪贴板
+
+    @objc public func copy(_ sender: Any?) {
+        let text = selectedText
+        guard !text.isEmpty else { return }
+
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+
+        // 与 1.0.2 一致：复制路径附带 RTF；编辑热路径不构造富文本。
+        let attributed = NSAttributedString(
+            string: text,
+            attributes: [.font: theme.font]
+        )
+        let rtf = attributed.rtf(
+            from: NSRange(location: 0, length: attributed.length),
+            documentAttributes: [:]
+        )
+        pasteboard.setData(rtf, forType: .rtf)
+    }
+
+    @objc public func cut(_ sender: Any?) {
+        guard !selectedText.isEmpty else { return }
+        copy(sender)
+        engine.deleteSelections(origin: .cut)
+    }
+
+    @objc public func paste(_ sender: Any?) {
+        pasteAsPlainText(sender)
+    }
+
+    /// 始终按纯文本粘贴，避免从浏览器等应用带入字体和颜色。
+    @objc public func pasteAsPlainText(_ sender: Any?) {
+        guard engine.isEditable,
+              let text = NSPasteboard.general.string(forType: .string),
+              !text.isEmpty
+        else {
+            return
+        }
+        // 粘贴前先丢弃未提交的组合，避免把半成品拼进新文本。
+        engine.unmarkText()
+        engine.replaceSelections(with: text, origin: .paste)
+    }
+
+    // MARK: - 菜单校验
+
+    @objc public func validateUserInterfaceItem(
+        _ item: NSValidatedUserInterfaceItem
+    ) -> Bool {
+        let action = item.action
+        switch action {
+        case #selector(LineaTextView.cut(_:)),
+             #selector(LineaTextView.copy(_:)):
+            return !selectedText.isEmpty
+        case #selector(LineaTextView.paste(_:)),
+             #selector(LineaTextView.pasteAsPlainText(_:)):
+            return engine.isEditable
+                && NSPasteboard.general.availableType(from: [.string]) != nil
+        case #selector(LineaTextView.delete(_:)):
+            return engine.isEditable
+                && engine.selections.contains { !$0.isCaret }
+        case #selector(LineaTextView.selectAll(_:)):
+            return engine.length > 0
+        case #selector(LineaTextView.undo(_:)):
+            return engine.canUndo
+        case #selector(LineaTextView.redo(_:)):
+            return engine.canRedo
+        default:
+            return true
+        }
+    }
+
+    // MARK: - 右键菜单
+
+    public override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = NSMenu()
+        menu.addItem(
+            withTitle: "Cut",
+            action: #selector(LineaTextView.cut(_:)),
+            keyEquivalent: ""
+        )
+        menu.addItem(
+            withTitle: "Copy",
+            action: #selector(LineaTextView.copy(_:)),
+            keyEquivalent: ""
+        )
+        menu.addItem(
+            withTitle: "Paste",
+            action: #selector(LineaTextView.paste(_:)),
+            keyEquivalent: ""
+        )
+        menu.addItem(
+            withTitle: "Paste and Match Style",
+            action: #selector(LineaTextView.pasteAsPlainText(_:)),
+            keyEquivalent: ""
+        )
+        menu.addItem(.separator())
+        menu.addItem(
+            withTitle: "Select All",
+            action: #selector(LineaTextView.selectAll(_:)),
+            keyEquivalent: ""
+        )
+        return menu
+    }
+
+    // MARK: - 鼠标选择与多光标
+
+    public override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        let point = convert(event.locationInWindow, from: nil)
+        let index = layoutEngine.index(at: point)
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        handleClick(at: index, clickCount: event.clickCount, modifiers: flags)
+
+        // 只有无修饰键的单击开启拖拽选择；⌘/⇧ 点击不进入拖拽。
+        if event.clickCount == 1,
+           !flags.contains(.command),
+           !flags.contains(.shift),
+           !flags.contains(.control)
+        {
+            isDraggingSelection = true
+            dragAnchorOffset = index
+            dragPoint = point
+        }
+    }
+
+    public override func mouseDragged(with event: NSEvent) {
+        guard isDraggingSelection, let anchor = dragAnchorOffset else {
+            super.mouseDragged(with: event)
+            return
+        }
+        dragPoint = convert(event.locationInWindow, from: nil)
+        extendDragSelection(anchor: anchor)
+        updateDragAutoscroll()
+    }
+
+    public override func mouseUp(with event: NSEvent) {
+        endDrag()
+        super.mouseUp(with: event)
+    }
+
+    /// 程序化点击入口：测试与控制器可复用同一套点击语义，避免伪造 NSEvent。
+    @discardableResult
+    public func select(
+        at point: CGPoint,
+        clickCount: Int = 1,
+        modifiers: NSEvent.ModifierFlags = []
+    ) -> Bool {
+        let index = layoutEngine.index(at: point)
+        handleClick(
+            at: index,
+            clickCount: clickCount,
+            modifiers: modifiers.intersection(.deviceIndependentFlagsMask)
+        )
+        return true
+    }
+
+    private func handleClick(
+        at index: Int,
+        clickCount: Int,
+        modifiers: NSEvent.ModifierFlags
+    ) {
+        if modifiers.contains(.command) {
+            toggleCursor(at: index)
+            return
+        }
+        if modifiers.contains(.shift), modifiers.contains(.control) {
+            appendCursor(at: index)
+            return
+        }
+        if clickCount >= 3 {
+            let line = engine.lineNumber(at: index)
+            commitSelections(
+                [TextSelection(range: engine.lineContentRange(at: line))],
+                source: .mouse
+            )
+            return
+        }
+        if clickCount == 2,
+           let range = engine.wordRange(at: index, mode: .word),
+           range.length > 0
+        {
+            commitSelections([TextSelection(range: range)], source: .mouse)
+            return
+        }
+        if modifiers.contains(.shift) {
+            let primary = engine.primarySelection
+            let start = min(primary.range.location, index)
+            let end = max(primary.insertionOffset, index)
+            commitSelections(
+                [TextSelection(range: NSRange(location: start, length: end - start))],
+                source: .mouse
+            )
+            return
+        }
+        commitSelections([TextSelection.caret(at: index)], source: .mouse)
+    }
+
+    /// ⌘+点击：已有光标则移除，否则追加；至少保留一个光标。
+    private func toggleCursor(at index: Int) {
+        var current = engine.selections
+        if let existing = current.firstIndex(where: {
+            $0.isCaret && $0.range.location == index
+        }) {
+            guard current.count > 1 else { return }
+            current.remove(at: existing)
+        } else {
+            guard current.count < SelectionModel.maximumSelections else {
+                NSSound.beep()
+                return
+            }
+            current.append(.caret(at: index))
+        }
+        commitSelections(current, source: .multiCursor)
+    }
+
+    /// ⇧⌃+点击：追加光标，不打开新选择。
+    private func appendCursor(at index: Int) {
+        var current = engine.selections
+        guard !current.contains(where: { $0.isCaret && $0.range.location == index }) else {
+            return
+        }
+        guard current.count < SelectionModel.maximumSelections else {
+            NSSound.beep()
+            return
+        }
+        current.append(.caret(at: index))
+        commitSelections(current, source: .multiCursor)
+    }
+
+    private func extendDragSelection(anchor: Int) {
+        let index = layoutEngine.index(at: dragPoint)
+        let start = min(anchor, index)
+        let end = max(anchor, index)
+        commitSelections(
+            [TextSelection(range: NSRange(location: start, length: end - start))],
+            source: .mouse
+        )
+    }
+
+    private func endDrag() {
+        isDraggingSelection = false
+        dragAnchorOffset = nil
+        stopDragScrollTimer()
+    }
+
+    // MARK: 拖拽边缘自动滚动
+
+    private func updateDragAutoscroll() {
+        guard let scrollView = enclosingScrollView else { return }
+        let visible = scrollView.documentVisibleRect
+        let outside = dragPoint.y < visible.minY
+            || dragPoint.y > visible.maxY
+            || dragPoint.x < visible.minX
+            || dragPoint.x > visible.maxX
+        if outside {
+            startDragScrollTimer()
+        } else {
+            stopDragScrollTimer()
+        }
+    }
+
+    private func startDragScrollTimer() {
+        guard dragScrollTimer == nil else { return }
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            self?.performDragScrollTick()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        dragScrollTimer = timer
+    }
+
+    private func stopDragScrollTimer() {
+        dragScrollTimer?.invalidate()
+        dragScrollTimer = nil
+    }
+
+    private func performDragScrollTick() {
+        guard isDraggingSelection,
+              let scrollView = enclosingScrollView,
+              let anchor = dragAnchorOffset
+        else {
+            stopDragScrollTimer()
+            return
+        }
+
+        let clipView = scrollView.contentView
+        let visible = clipView.bounds
+        let edge: CGFloat = 16
+        var delta = CGPoint.zero
+        if dragPoint.y < visible.minY { delta.y = -edge }
+        else if dragPoint.y > visible.maxY { delta.y = edge }
+        if dragPoint.x < visible.minX { delta.x = -edge }
+        else if dragPoint.x > visible.maxX { delta.x = edge }
+        guard delta != .zero else {
+            stopDragScrollTimer()
+            return
+        }
+
+        let maxX = max(0, frame.width - visible.width)
+        let maxY = max(0, frame.height - visible.height)
+        var origin = visible.origin
+        origin.x = min(max(0, origin.x + delta.x), maxX)
+        origin.y = min(max(0, origin.y + delta.y), maxY)
+        guard origin != visible.origin else { return }
+
+        clipView.scroll(to: origin)
+        scrollView.reflectScrolledClipView(clipView)
+        // 滚动后同一屏幕点对应新的文本偏移，重新扩展选区。
+        extendDragSelection(anchor: anchor)
+    }
+
+    // MARK: - 多光标命令
+
+    @discardableResult
+    public func selectNextOccurrence() -> MultiCursorCommandResult {
+        let result = MultiCursorCommands.selectNextOccurrence(
+            in: engine.text,
+            selections: engine.selections
+        )
+        applyMultiCursorResult(result)
+        return result
+    }
+
+    @discardableResult
+    public func selectAllOccurrences() -> MultiCursorCommandResult {
+        let result = MultiCursorCommands.selectAllOccurrences(
+            in: engine.text,
+            selections: engine.selections
+        )
+        applyMultiCursorResult(result)
+        return result
+    }
+
+    @discardableResult
+    public func addCursorsToSelectedLines() -> MultiCursorCommandResult {
+        let result = MultiCursorCommands.addCursorsToSelectedLines(
+            in: engine.text,
+            selections: engine.selections,
+            lineIndex: engine.lineIndex
+        )
+        applyMultiCursorResult(result)
+        return result
+    }
+
+    private func applyMultiCursorResult(_ result: MultiCursorCommandResult) {
+        guard case let .updated(updated) = result else { return }
+        commitSelections(updated, source: .multiCursor, reveal: true)
+    }
+
+    // MARK: - NSTextInputClient
+
+    public func setMarkedText(
+        _ string: Any,
+        selectedRange: NSRange,
+        replacementRange: NSRange
+    ) {
+        guard engine.isEditable else { return }
+        let text = (string as? NSAttributedString)?.string
+            ?? (string as? String)
+            ?? ""
+        engine.setMarkedText(
+            text,
+            selectedRange: selectedRange,
+            replacementRange: replacementRange
+        )
+        resetCaretBlink()
+        needsDisplay = true
+        inputContext?.invalidateCharacterCoordinates()
+    }
+
+    public func unmarkText() {
+        engine.unmarkText()
+        needsDisplay = true
+        inputContext?.invalidateCharacterCoordinates()
+    }
+
+    public func selectedRange() -> NSRange {
+        engine.primarySelection.range
+    }
+
+    public func markedRange() -> NSRange {
+        guard let composition = engine.composition,
+              let base = composition.baseSelections.last
+        else {
+            return NSRange(location: NSNotFound, length: 0)
+        }
+        return NSRange(
+            location: base.range.location,
+            length: composition.markedTextLength
+        )
+    }
+
+    public func hasMarkedText() -> Bool {
+        engine.isComposing
+    }
+
+    public func attributedSubstring(
+        forProposedRange range: NSRange,
+        actualRange: NSRangePointer?
+    ) -> NSAttributedString? {
+        guard range.location != NSNotFound,
+              range.location >= 0,
+              range.length >= 0,
+              range.location <= engine.length,
+              range.length <= engine.length - range.location
+        else {
+            return nil
+        }
+        actualRange?.pointee = range
+        return NSAttributedString(
+            string: engine.substring(in: range),
+            attributes: [.font: theme.font]
+        )
+    }
+
+    public func validAttributesForMarkedText() -> [NSAttributedString.Key] {
+        []
+    }
+
+    /// 候选窗定位：返回光标在屏幕坐标系中的矩形。
+    public func firstRect(
+        forCharacterRange range: NSRange,
+        actualRange: NSRangePointer?
+    ) -> NSRect {
+        let location: Int
+        if range.location == NSNotFound {
+            location = engine.primarySelection.range.location
+        } else {
+            location = min(max(0, range.location), engine.length)
+        }
+        actualRange?.pointee = NSRange(location: location, length: 0)
+
+        let caret = layoutEngine.caretRect(for: location)
+        guard let window else { return caret }
+        let windowRect = convert(caret, to: nil)
+        return window.convertToScreen(windowRect)
+    }
+
+    public func characterIndex(for point: NSPoint) -> Int {
+        guard let window else { return 0 }
+        let windowPoint = window.convertPoint(fromScreen: point)
+        let viewPoint = convert(windowPoint, from: nil)
+        return layoutEngine.index(at: viewPoint)
+    }
+
+    public func windowLevel() -> Int {
+        window?.level.rawValue ?? NSWindow.Level.normal.rawValue
+    }
+
+    public func drawsVerticallyForCharacter(at charIndex: Int) -> Bool {
+        false
+    }
+
+    // MARK: - TextSurface
+
+    public func setSelections(_ selections: [TextSelection]) {
+        self.selections = selections
+    }
+
     // MARK: - 内部
+
+    private func commitSelections(
+        _ updated: [TextSelection],
+        source: SelectionSource,
+        reveal: Bool = false,
+        keepVerticalAnchor: Bool = false,
+        keepExtendAnchors: Bool = false
+    ) {
+        resetCaretBlink()
+        if !keepExtendAnchors {
+            extendAnchors = nil
+        }
+        guard engine.setSelections(updated, source: source) else { return }
+        if !keepVerticalAnchor {
+            verticalAnchorXs = nil
+        }
+        selectionDisplayDidChange(reveal: reveal)
+    }
+
+    private func selectionDisplayDidChange(reveal: Bool = false) {
+        resetCaretBlink()
+        needsDisplay = true
+        if reveal, let primary = engine.selections.last {
+            // 只滚主光标，避免多光标编辑时视图跟着最后一个选区乱跳。
+            scrollRangeToVisible(offset: primary.insertionOffset)
+        }
+    }
+
+    private func resetCaretBlink() {
+        isCaretVisible = true
+        guard window?.firstResponder === self else { return }
+        scheduleCaretTimer()
+    }
+
+    private func scheduleCaretTimer() {
+        caretBlinkTimer?.invalidate()
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            self?.isCaretVisible.toggle()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        caretBlinkTimer = timer
+    }
+
+    private func stopCaretBlinking() {
+        caretBlinkTimer?.invalidate()
+        caretBlinkTimer = nil
+        isCaretVisible = false
+    }
+
+    private var pageStep: CGFloat {
+        let visibleHeight = enclosingScrollView?.contentView.bounds.height
+            ?? layoutEngine.lineHeight * 20
+        return max(layoutEngine.lineHeight, visibleHeight - layoutEngine.lineHeight)
+    }
+
+    private func caretX(at offset: Int) -> CGFloat {
+        layoutEngine.caretRect(for: offset).minX
+    }
+
+    private func moveVertically(
+        direction: Int,
+        extendSelection: Bool,
+        distance: CGFloat? = nil
+    ) {
+        let current = engine.selections
+        let step = distance ?? layoutEngine.lineHeight
+
+        // 一次连续垂直移动只捕获一次 x 锚点，短行不会让后续移动横向漂移。
+        if verticalAnchorXs?.count != current.count {
+            verticalAnchorXs = current.map { selection in
+                let caret = direction < 0
+                    ? selection.range.location
+                    : selection.insertionOffset
+                return caretX(at: caret)
+            }
+        }
+        guard let anchors = verticalAnchorXs else { return }
+
+        // Shift+上下同样使用固定锚点，跨方向反复移动不会累积误差。
+        if extendSelection, extendAnchors?.count != current.count {
+            extendAnchors = current.map { selection in
+                if selection.isCaret {
+                    return selection.range.location
+                }
+                return direction < 0
+                    ? selection.insertionOffset
+                    : selection.range.location
+            }
+        }
+
+        var updated: [TextSelection] = []
+        updated.reserveCapacity(current.count)
+        for (index, selection) in current.enumerated() {
+            if !extendSelection, !selection.isCaret {
+                // 有选区时先折叠到方向对应的一端，不额外跨行。
+                let caret = direction < 0
+                    ? selection.range.location
+                    : selection.insertionOffset
+                updated.append(
+                    TextSelection.caret(at: caret, affinity: selection.affinity)
+                )
+                continue
+            }
+
+            let active: Int
+            let anchor: Int?
+            if extendSelection {
+                anchor = extendAnchors.flatMap {
+                    index < $0.count ? $0[index] : nil
+                }
+                if let anchor, anchor <= selection.range.location {
+                    active = selection.insertionOffset
+                } else if let anchor, anchor >= selection.insertionOffset {
+                    active = selection.range.location
+                } else {
+                    // 光标或锚点落在选区内部：以当前活动端为准。
+                    active = direction < 0
+                        ? selection.range.location
+                        : selection.insertionOffset
+                }
+            } else {
+                active = selection.range.location
+                anchor = nil
+            }
+
+            let line = engine.lineNumber(at: active)
+            let targetY = layoutEngine.y(forLine: line) + CGFloat(direction) * step
+            let target = layoutEngine.verticalDestination(
+                from: active,
+                toY: targetY,
+                x: anchors[index]
+            )
+
+            if let anchor {
+                let start = min(anchor, target)
+                let end = max(anchor, target)
+                updated.append(
+                    TextSelection(
+                        range: NSRange(location: start, length: end - start),
+                        affinity: selection.affinity
+                    )
+                )
+            } else {
+                updated.append(
+                    TextSelection.caret(at: target, affinity: selection.affinity)
+                )
+            }
+        }
+
+        commitSelections(
+            updated,
+            source: .keyboard,
+            reveal: true,
+            keepVerticalAnchor: true,
+            keepExtendAnchors: extendSelection
+        )
+    }
+
+    private func scroll(by dy: CGFloat) {
+        guard let scrollView = enclosingScrollView else { return }
+        let clipView = scrollView.contentView
+        let maxY = max(0, frame.height - clipView.bounds.height)
+        var origin = clipView.bounds.origin
+        origin.y = min(max(0, origin.y + dy), maxY)
+        guard origin != clipView.bounds.origin else { return }
+        clipView.scroll(to: origin)
+        scrollView.reflectScrolledClipView(clipView)
+    }
+
+    private func scrollTo(y: CGFloat) {
+        guard let scrollView = enclosingScrollView else { return }
+        let clipView = scrollView.contentView
+        let maxY = max(0, frame.height - clipView.bounds.height)
+        var origin = clipView.bounds.origin
+        origin.y = min(max(0, y), maxY)
+        clipView.scroll(to: origin)
+        scrollView.reflectScrolledClipView(clipView)
+    }
 
     private func attachToScrollViewIfNeeded() {
         guard let clipView = enclosingScrollView?.contentView else { return }
@@ -173,10 +1193,5 @@ public final class LineaTextView: NSView {
     private func syncViewportWidth() {
         guard let clipView = enclosingScrollView?.contentView else { return }
         setViewportWidth(clipView.bounds.width)
-    }
-
-    private func invalidateSelectionDisplay() {
-        // 选区矩形与文本同层绘制，直接重绘可见区域；不创建选区子视图。
-        needsDisplay = true
     }
 }

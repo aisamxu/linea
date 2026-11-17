@@ -103,6 +103,40 @@ public final class EditorEngine {
         lineIndex.previousLineStart(before: offset)
     }
 
+    // MARK: - 字符与词边界
+
+    /// 前一个 grapheme cluster 的起点；CRLF 作为整体跨过。
+    public func previousCharacterBoundary(before offset: Int) -> Int {
+        navigation.previousCharacterBoundary(before: offset)
+    }
+
+    /// 后一个 grapheme cluster 的终点；CRLF 作为整体跨过。
+    public func nextCharacterBoundary(after offset: Int) -> Int {
+        navigation.nextCharacterBoundary(after: offset)
+    }
+
+    public func previousWordBoundary(
+        before offset: Int,
+        mode: WordBoundaryMode = .word
+    ) -> Int {
+        navigation.previousWordBoundary(before: offset, mode: mode)
+    }
+
+    public func nextWordBoundary(
+        after offset: Int,
+        mode: WordBoundaryMode = .word
+    ) -> Int {
+        navigation.nextWordBoundary(after: offset, mode: mode)
+    }
+
+    /// 双击选词等命令使用的词范围。
+    public func wordRange(
+        at offset: Int,
+        mode: WordBoundaryMode = .word
+    ) -> NSRange? {
+        navigation.wordRange(at: offset, mode: mode)
+    }
+
     // MARK: - 选区
 
     /// 写入选区集合；返回是否发生变化。只改变选区时不置脏、不发文本变更。
