@@ -115,6 +115,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
     }
 
+    /// ⌘T：优先在当前窗口新建标签；没有窗口时新建窗口（窗口内自带空白标签）。
+    @objc func newTabAction(_ sender: Any?) {
+        newDocumentAction(sender)
+    }
+
     @objc func newWindowAction(_ sender: Any?) {
         guard !isTestMode, !isTerminationInProgress else { return }
         windowManager.newWindow()
@@ -143,6 +148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
         case #selector(newDocumentAction(_:)),
+             #selector(newTabAction(_:)),
              #selector(newWindowAction(_:)),
              #selector(openDocument(_:)):
             return !isTestMode && !isTerminationInProgress

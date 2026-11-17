@@ -84,6 +84,11 @@ enum MainMenu {
             "n"
         ))
         menu.addItem(item(
+            "New Tab",
+            #selector(AppDelegate.newTabAction(_:)),
+            "t"
+        ))
+        menu.addItem(item(
             "New Window",
             #selector(AppDelegate.newWindowAction(_:)),
             "n",
@@ -211,6 +216,23 @@ enum MainMenu {
             "Zoom",
             #selector(NSWindow.performZoom(_:))
         ))
+
+        menu.addItem(.separator())
+
+        // ⌘1…⌘9 按标签栏顺序切换；menuItem.tag 使用 1 起的标签编号。
+        let selectTabMenu = NSMenu(title: "Select Tab")
+        for number in 1...9 {
+            let selectItem = item(
+                "Tab \(number)",
+                #selector(EditorWindowController.selectTabAction(_:)),
+                String(number)
+            )
+            selectItem.tag = number
+            selectTabMenu.addItem(selectItem)
+        }
+        let selectTabItem = NSMenuItem(title: "Select Tab", action: nil, keyEquivalent: "")
+        selectTabItem.submenu = selectTabMenu
+        menu.addItem(selectTabItem)
 
         menu.addItem(.separator())
 

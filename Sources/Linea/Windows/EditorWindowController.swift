@@ -175,6 +175,13 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         selectedTabDidChange()
     }
 
+    /// 按标签栏顺序切换（从 1 开始）；编号越界时忽略。
+    func selectTab(number: Int) {
+        let index = number - 1
+        guard session.tabs.indices.contains(index) else { return }
+        selectTab(id: session.tabs[index].id)
+    }
+
     func tab(forFileURL url: URL) -> EditorTab? {
         session.tab(forFileURL: url)
     }
@@ -436,8 +443,9 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     // MARK: - 菜单动作
 
-    @objc func newTabAction(_ sender: Any?) {
-        newTab()
+    @objc func selectTabAction(_ sender: Any?) {
+        guard let menuItem = sender as? NSMenuItem else { return }
+        selectTab(number: menuItem.tag)
     }
 
     @objc func closeTabAction(_ sender: Any?) {
@@ -510,6 +518,9 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         guard !isTerminating, let action = menuItem.action else { return false }
 
         switch action {
+        case #selector(selectTabAction(_:)):
+            // menuItem.tag 是 1 起的标签编号；超出现有标签数时禁用。
+            return menuItem.tag >= 1 && menuItem.tag <= session.tabs.count
         case #selector(closeTabAction(_:)),
              #selector(saveDocument(_:)),
              #selector(saveDocumentAs(_:)),
