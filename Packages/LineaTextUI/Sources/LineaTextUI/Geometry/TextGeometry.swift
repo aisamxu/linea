@@ -41,18 +41,4 @@ public enum TextGeometry {
         )
         return first..<(last + 1)
     }
-
-    /// 第 line 行的整行矩形。
-    public static func lineRect(
-        forLine line: Int,
-        lineHeight: CGFloat,
-        width: CGFloat
-    ) -> CGRect {
-        CGRect(
-            x: 0,
-            y: y(forLine: line, lineHeight: lineHeight),
-            width: width,
-            height: lineHeight
-        )
-    }
 }

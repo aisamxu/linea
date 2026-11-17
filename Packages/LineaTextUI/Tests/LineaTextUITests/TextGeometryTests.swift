@@ -87,14 +87,4 @@ struct TextGeometryTests {
             ).isEmpty
         )
     }
-
-    @Test func lineRect() {
-        let rect = TextGeometry.lineRect(
-            forLine: 3,
-            lineHeight: lineHeight,
-            width: 500
-        )
-        #expect(rect.origin == CGPoint(x: 0, y: 40))
-        #expect(rect.size == CGSize(width: 500, height: 20))
-    }
 }

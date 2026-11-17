@@ -80,7 +80,7 @@ public struct SelectionModel: Equatable, Sendable {
                     // 重叠：合并为并集，合并结果放到新选区的位置，
                     // 这样主选区（通常是新追加的那个）仍然排在最后。
                     let union = Self.unionRange(existing.range, current.range)
-                    pending = TextSelection(range: union, affinity: current.affinity)
+                    pending = TextSelection(range: union)
                     result.remove(at: index)
                     continue
                 }
@@ -95,20 +95,7 @@ public struct SelectionModel: Equatable, Sendable {
     }
 
     public static func clamped(_ selection: TextSelection, to textLength: Int) -> TextSelection {
-        let safeLength = max(0, textLength)
-        let range = selection.range
-        guard range.location != NSNotFound else {
-            return TextSelection(
-                range: NSRange(location: 0, length: 0),
-                affinity: selection.affinity
-            )
-        }
-        let location = min(max(0, range.location), safeLength)
-        let length = min(max(0, range.length), safeLength - location)
-        return TextSelection(
-            range: NSRange(location: location, length: length),
-            affinity: selection.affinity
-        )
+        TextSelection(range: selection.range.clampedToTextLength(textLength))
     }
 
     // MARK: - 范围关系

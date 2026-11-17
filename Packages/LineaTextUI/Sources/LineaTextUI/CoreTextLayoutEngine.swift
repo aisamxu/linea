@@ -309,12 +309,7 @@ public final class CoreTextLayoutEngine: TextLayoutEngine {
         _ range: NSRange,
         markedLength: Int
     ) -> NSRange {
-        guard range.location != NSNotFound, range.location >= 0, range.length >= 0 else {
-            return NSRange(location: 0, length: 0)
-        }
-        let location = min(range.location, markedLength)
-        let length = min(range.length, markedLength - location)
-        return NSRange(location: location, length: length)
+        range.sanitizedToTextLength(markedLength)
     }
 
     public func invalidateLayout() {

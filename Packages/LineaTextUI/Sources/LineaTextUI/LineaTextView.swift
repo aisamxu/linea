@@ -13,9 +13,7 @@ import LineaCore
 public final class LineaTextView:
     NSView,
     NSTextInputClient,
-    NSTextFinderClient,
-    NSDraggingSource,
-    TextSurface
+    NSDraggingSource
 {
     public let engine: EditorEngine
     /// 字体度量变化时会整体替换；外部只读，滚动几何随新引擎重新计算。
@@ -104,7 +102,6 @@ public final class LineaTextView:
     private var isDocumentFrameGrowthScheduled = false
     /// 上一次通知 AX 的可见首行，滚动时只在跨行时发 layoutChanged。
     private var lastAccessibilityVisibleLine = -1
-    private var previousOnChange: ((EditorChange) -> Void)?
 
     private var caretBlinkTimer: Timer?
 
@@ -154,11 +151,9 @@ public final class LineaTextView:
         registerForDraggedTypes([.string])
 
         // 视图接管引擎回调：先更新布局/几何，再转发给外部控制器。
-        previousOnChange = engine.onChange
         engine.onChange = { [weak self] change in
             guard let self else { return }
             self.apply(change: change)
-            self.previousOnChange?(change)
             self.onChange?(change)
         }
     }
@@ -1790,113 +1785,6 @@ public final class LineaTextView:
         false
     }
 
-    // MARK: - NSTextFinderClient
-
-    // Replace All 会把多个替换从后往前逐个回调；这里先收集，在
-    // didReplaceCharacters 一次性升序应用，保证一个撤销条目且不逐个重排。
-    private var pendingFinderEdits: [TextEdit] = []
-
-    public var string: String {
-        engine.text
-    }
-
-    public var isSelectable: Bool {
-        true
-    }
-
-    public var allowsMultipleSelection: Bool {
-        true
-    }
-
-    public var firstSelectedRange: NSRange {
-        engine.primarySelection.range
-    }
-
-    public var selectedRanges: [NSValue] {
-        get { engine.selections.map { NSValue(range: $0.range) } }
-        set {
-            let updated = newValue
-                .map { TextSelection(range: clampedDocumentRange($0.rangeValue)) }
-                .sorted { $0.range.location < $1.range.location }
-            if !updated.isEmpty {
-                selections = updated
-            }
-        }
-    }
-
-    public var visibleCharacterRanges: [NSValue] {
-        let visibleRect = enclosingScrollView?.documentVisibleRect ?? bounds
-        let lines = layoutEngine.lines(in: visibleRect)
-        guard !lines.isEmpty else { return [] }
-        let first = engine.lineRange(at: lines.lowerBound)
-        let last = engine.lineRange(at: lines.upperBound - 1)
-        return [NSValue(range: NSRange(
-            location: first.location,
-            length: last.location + last.length - first.location
-        ))]
-    }
-
-    public func stringLength() -> Int {
-        engine.length
-    }
-
-    public func substring(with range: NSRange) -> String {
-        guard isValidDocumentRange(range) else { return "" }
-        return engine.substring(in: range)
-    }
-
-    public func contentView(
-        at index: Int,
-        effectiveRange: NSRangePointer
-    ) -> NSView? {
-        effectiveRange.pointee = NSRange(
-            location: 0,
-            length: engine.length
-        )
-        return self
-    }
-
-    public func rects(forCharacterRange range: NSRange) -> [NSValue]? {
-        guard isValidDocumentRange(range) else { return nil }
-        if range.length == 0 {
-            return [NSValue(rect: layoutEngine.caretRect(for: range.location))]
-        }
-        return layoutEngine.rects(for: range).map { NSValue(rect: $0) }
-    }
-
-    public func shouldReplaceCharacters(
-        inRanges ranges: [NSValue],
-        with strings: [String]
-    ) -> Bool {
-        guard engine.isEditable, ranges.count == strings.count else {
-            return false
-        }
-        return ranges.allSatisfy { isValidDocumentRange($0.rangeValue) }
-    }
-
-    /// 收集单个替换；NSTextFinder 的 Replace All 会连续调用多次。
-    public func replaceCharacters(in range: NSRange, with string: String) {
-        guard engine.isEditable, isValidDocumentRange(range) else { return }
-        // 查找替换前提交组合，避免 marked text 与替换范围交叉。
-        commitPendingInput()
-        pendingFinderEdits.append(TextEdit(range: range, replacement: string))
-    }
-
-    /// 一次应用本轮全部替换；多个匹配只产生一个历史条目。
-    public func didReplaceCharacters() {
-        guard !pendingFinderEdits.isEmpty else { return }
-        let edits = pendingFinderEdits.sorted {
-            $0.range.location < $1.range.location
-        }
-        pendingFinderEdits.removeAll(keepingCapacity: true)
-        engine.apply(edits: edits, origin: .replaceAll)
-    }
-
-    /// 查找栏出现/文本将变前由控制器调用，避免增量查找缓存过期。
-    public func noteFindStringWillChange(_ textFinder: NSTextFinder) {
-        textFinder.noteClientStringWillChange()
-    }
-
     // MARK: - 无障碍
 
     // 视图是单一 AX 元素，不创建隐藏 NSTextView；文本、选区与行号全部从引擎读取。
@@ -2028,20 +1916,11 @@ public final class LineaTextView:
 
     /// 文档范围夹取；AX 客户端传来的越界范围不崩溃。
     private func clampedDocumentRange(_ range: NSRange) -> NSRange {
-        guard range.location != NSNotFound, range.location >= 0, range.length >= 0 else {
-            return NSRange(location: 0, length: 0)
-        }
-        let location = min(range.location, engine.length)
-        let length = min(range.length, engine.length - location)
-        return NSRange(location: location, length: length)
+        range.sanitizedToTextLength(engine.length)
     }
 
     private func isValidDocumentRange(_ range: NSRange) -> Bool {
-        range.location != NSNotFound
-            && range.location >= 0
-            && range.length >= 0
-            && range.location <= engine.length
-            && range.length <= engine.length - range.location
+        range.isValidTextRange(in: engine.length)
     }
 
     /// 返回 index 所在组合字符（grapheme）的文档范围。
@@ -2069,7 +1948,7 @@ public final class LineaTextView:
         )
     }
 
-    // MARK: - TextSurface
+    // MARK: - 选区接口
 
     public func setSelections(_ selections: [TextSelection]) {
         self.selections = selections
@@ -2177,9 +2056,7 @@ public final class LineaTextView:
                 let caret = direction < 0
                     ? selection.range.location
                     : selection.insertionOffset
-                updated.append(
-                    TextSelection.caret(at: caret, affinity: selection.affinity)
-                )
+                updated.append(TextSelection.caret(at: caret))
                 continue
             }
 
@@ -2216,15 +2093,10 @@ public final class LineaTextView:
                 let start = min(anchor, target)
                 let end = max(anchor, target)
                 updated.append(
-                    TextSelection(
-                        range: NSRange(location: start, length: end - start),
-                        affinity: selection.affinity
-                    )
+                    TextSelection(range: NSRange(location: start, length: end - start))
                 )
             } else {
-                updated.append(
-                    TextSelection.caret(at: target, affinity: selection.affinity)
-                )
+                updated.append(TextSelection.caret(at: target))
             }
         }
 

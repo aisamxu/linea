@@ -488,7 +488,7 @@ struct LineaTextViewEditingTests {
         #expect(view.frame.height == view.layoutEngine.lineHeight)
     }
 
-    // MARK: - TextSurface
+    // MARK: - 选区同步
 
     @Test func selectionsFlowThroughEngine() {
         let view = makeView("alpha\nbeta")

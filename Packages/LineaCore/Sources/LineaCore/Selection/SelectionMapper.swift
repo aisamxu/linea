@@ -45,17 +45,13 @@ enum SelectionMapper {
                 // 最终折叠位置由最靠后的那个编辑决定。
                 let edit = applied[boundary - 1]
                 let caret = edit.rangeInResult.location + edit.rangeInResult.length
-                return TextSelection(
-                    range: NSRange(location: caret, length: 0),
-                    affinity: selection.affinity
-                )
+                return TextSelection(range: NSRange(location: caret, length: 0))
             }
 
             // 没有相交编辑：按左侧编辑的累计 delta 整体平移。
             let shift = deltaBefore[firstCandidate]
             return TextSelection(
-                range: NSRange(location: start + shift, length: selection.range.length),
-                affinity: selection.affinity
+                range: NSRange(location: start + shift, length: selection.range.length)
             )
         }
     }
