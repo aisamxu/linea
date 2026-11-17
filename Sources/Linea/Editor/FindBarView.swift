@@ -32,9 +32,9 @@ final class FindBarView: NSView, NSTextFieldDelegate {
     var onClose: (() -> Void)?
 
     var query: String { searchField.stringValue }
-    var replacement: String { replaceField.stringValue }
 
-    var options: Options {
+    /// 当前开关状态；切换大小写/全字匹配后据此通知控制器重算匹配。
+    private var options: Options {
         Options(
             matchCase: caseButton.state == .on,
             wholeWord: wholeWordButton.state == .on
@@ -225,10 +225,6 @@ final class FindBarView: NSView, NSTextFieldDelegate {
         if selectAll, window?.firstResponder === searchField.currentEditor() {
             searchField.currentEditor()?.selectAll(nil)
         }
-    }
-
-    func setReplacement(_ text: String) {
-        replaceField.stringValue = text
     }
 
     func setOptions(_ options: Options) {
