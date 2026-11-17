@@ -3,7 +3,7 @@ import CoreText
 
 /// 编辑器视觉主题与字体度量。
 ///
-/// 字体、行高和 tab 间隔固定（当前产品无缩放、无字体面板）；
+/// 默认 13pt 等宽字体；App 层可通过 `standard(fontSize:)` 调整字号并持久化。
 /// 颜色使用动态系统色，跟随浅色/深色外观。
 public struct TextTheme {
     public var font: CTFont
@@ -47,6 +47,24 @@ public struct TextTheme {
 
     public static let standard = TextTheme()
 
+    /// 按字号生成主题。
+    ///
+    /// 行号字号随正文等比缩放（13pt 正文对应 11pt 行号），
+    /// 避免放大后行号显得过小；最小 9pt 保证可读性。
+    public static func standard(fontSize: CGFloat) -> TextTheme {
+        let size = max(1, fontSize)
+        let lineNumberSize = max(9, (size * 11 / 13).rounded())
+        return TextTheme(
+            font: font(ofSize: size),
+            lineNumberFont: .monospacedDigitSystemFont(
+                ofSize: lineNumberSize,
+                weight: .regular
+            )
+        )
+    }
+
+    public var fontSize: CGFloat { CTFontGetSize(font) }
+
     public var ascent: CGFloat { CTFontGetAscent(font) }
     public var descent: CGFloat { CTFontGetDescent(font) }
     public var leading: CGFloat { CTFontGetLeading(font) }
@@ -56,11 +74,12 @@ public struct TextTheme {
         ceil((ascent + descent + leading) * lineHeightMultiple)
     }
 
-    /// 基线在行内的偏移。按计划统一使用 ascent，额外行距留在基线下方。
-    public var baselineOffset: CGFloat { ascent }
-
     private static func defaultFont() -> CTFont {
-        let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        font(ofSize: 13)
+    }
+
+    private static func font(ofSize size: CGFloat) -> CTFont {
+        let font = NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
         return CTFontCreateWithName(font.fontName as CFString, font.pointSize, nil)
     }
 }

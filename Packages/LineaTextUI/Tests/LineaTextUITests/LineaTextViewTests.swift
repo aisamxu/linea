@@ -380,4 +380,57 @@ struct LineaTextViewTests {
         #expect(scrollView.documentView === textView)
         #expect(textView.frame.height == textView.layoutEngine.documentHeight)
     }
+
+    @Test func fontSizeThemeScalesEditorAndLineNumberMetrics() {
+        let small = TextTheme.standard(fontSize: 11)
+        let large = TextTheme.standard(fontSize: 24)
+
+        #expect(small.fontSize == 11)
+        #expect(large.fontSize == 24)
+        #expect(large.lineHeight > small.lineHeight)
+        #expect(large.lineNumberFont.pointSize > small.lineNumberFont.pointSize)
+    }
+
+    @Test func applyingLargerThemeRebuildsLayoutAndKeepsTopLine() {
+        let text = (1...200).map { "line \($0)" }.joined(separator: "\n")
+        let (scrollView, textView, ruler) = makeScrollView(
+            text: text,
+            size: NSSize(width: 400, height: 120)
+        )
+        scrollView.contentView.scroll(
+            to: CGPoint(x: 0, y: textView.layoutEngine.y(forLine: 60))
+        )
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        let topLine = textView.layoutEngine.lineNumber(
+            atY: scrollView.contentView.bounds.minY
+        )
+        let oldLineHeight = textView.layoutEngine.lineHeight
+
+        textView.applyTheme(.standard(fontSize: 20))
+
+        #expect(textView.theme.fontSize == 20)
+        #expect(textView.layoutEngine.lineHeight > oldLineHeight)
+        #expect(textView.frame.height == textView.layoutEngine.documentHeight)
+        // 字号变化后仍停在原来的顶部行，不跳回文档开头。
+        #expect(
+            textView.layoutEngine.lineNumber(
+                atY: scrollView.contentView.bounds.minY
+            ) == topLine
+        )
+        #expect(ruler.ruleThickness >= 35)
+    }
+
+    @Test func colorOnlyThemeChangeKeepsLayoutCache() {
+        let (_, textView, _) = makeScrollView(text: "one\ntwo\nthree")
+        _ = textView.layoutEngine.layoutLine(number: 1)
+        let countBefore = textView.layoutEngine.layoutCount
+
+        var custom = textView.theme
+        custom.background = .black
+        custom.text = .white
+        textView.theme = custom
+
+        #expect(textView.layoutEngine.layoutCount == countBefore)
+        #expect(textView.theme.background == .black)
+    }
 }

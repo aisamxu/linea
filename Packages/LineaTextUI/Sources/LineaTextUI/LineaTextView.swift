@@ -17,13 +17,18 @@ public final class LineaTextView:
     TextSurface
 {
     public let engine: EditorEngine
-    public let layoutEngine: CoreTextLayoutEngine
+    /// 字体度量变化时会整体替换；外部只读，滚动几何随新引擎重新计算。
+    public private(set) var layoutEngine: CoreTextLayoutEngine
 
     public var theme: TextTheme {
         didSet {
             renderer.theme = theme
-            lineNumberRuler?.refresh()
-            needsDisplay = true
+            if Self.metricsDiffer(theme, oldValue) {
+                rebuildLayoutEngine()
+            } else {
+                lineNumberRuler?.refresh()
+                needsDisplay = true
+            }
         }
     }
 
@@ -191,6 +196,61 @@ public final class LineaTextView:
         updateDocumentFrame()
         lineNumberRuler?.refresh()
         needsDisplay = true
+    }
+
+    /// 应用新主题。字号、行距或 tab 变化时重建布局引擎并按顶部行保持滚动位置；
+    /// 只改颜色时复用现有行缓存，不产生重新排版。
+    public func applyTheme(_ newTheme: TextTheme) {
+        theme = newTheme
+    }
+
+    private func rebuildLayoutEngine() {
+        let oldEngine = layoutEngine
+        let clipView = enclosingScrollView?.contentView
+        // 以顶部可见行作为锚点：行高变化后仍停留在同一行，而不是跳到别处。
+        let topLine = oldEngine.lineNumber(
+            atY: max(0, clipView?.bounds.minY ?? 0)
+        )
+        let oldOriginX = clipView?.bounds.minX ?? 0
+        let viewportWidth = oldEngine.viewportWidth
+
+        let newEngine = CoreTextLayoutEngine(
+            engine: engine,
+            font: theme.font,
+            tabInterval: theme.tabInterval,
+            lineHeightMultiple: theme.lineHeightMultiple
+        )
+        newEngine.viewportWidth = viewportWidth
+        layoutEngine = newEngine
+        displayedVersion = engine.version
+        verticalAnchorXs = nil
+        extendAnchors = nil
+        updateDocumentFrame()
+
+        if let clipView, let scrollView = enclosingScrollView {
+            let maxX = max(0, frame.width - clipView.bounds.width)
+            let maxY = max(0, frame.height - clipView.bounds.height)
+            let origin = CGPoint(
+                x: min(max(0, oldOriginX), maxX),
+                y: min(max(0, newEngine.y(forLine: topLine)), maxY)
+            )
+            clipView.scroll(to: origin)
+            scrollView.reflectScrolledClipView(clipView)
+        }
+
+        lineNumberRuler?.refresh()
+        inputContext?.invalidateCharacterCoordinates()
+        NSAccessibility.post(element: self, notification: .layoutChanged)
+        needsDisplay = true
+    }
+
+    /// 只有字体度量、tab 或行距变化才需要重建布局；纯颜色切换可复用行缓存。
+    private static func metricsDiffer(_ lhs: TextTheme, _ rhs: TextTheme) -> Bool {
+        abs(CTFontGetSize(lhs.font) - CTFontGetSize(rhs.font)) > 0.01
+            || (CTFontCopyPostScriptName(lhs.font) as String)
+                != (CTFontCopyPostScriptName(rhs.font) as String)
+            || lhs.tabInterval != rhs.tabInterval
+            || lhs.lineHeightMultiple != rhs.lineHeightMultiple
     }
 
     /// 把文档尺寸同步到 frame；滚动视图据此决定滚动条范围。

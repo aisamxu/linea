@@ -187,6 +187,13 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         areaController.currentEditor?.focusEditorNow()
     }
 
+    /// 把全局字号应用到本窗口的全部标签，包括未显示的后台标签。
+    func applyFontSize(_ size: CGFloat) {
+        for tab in session.tabs {
+            tab.editor.applyFontSize(size)
+        }
+    }
+
     func tab(forFileURL url: URL) -> EditorTab? {
         session.tab(forFileURL: url)
     }

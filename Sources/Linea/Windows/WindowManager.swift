@@ -79,6 +79,13 @@ final class WindowManager {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// 全局字号变化后刷新所有窗口的所有标签。
+    func applyFontSize(_ size: CGFloat) {
+        for controller in windowControllers {
+            controller.applyFontSize(size)
+        }
+    }
+
     // MARK: - 打开文件
 
     func openFiles(_ urls: [URL]) {

@@ -1,5 +1,4 @@
 import AppKit
-import UniformTypeIdentifiers
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var windowManager: WindowManager!
@@ -8,6 +7,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var pendingOpenURLs: [URL] = []
     private var isTestMode = false
     private var isTerminationInProgress = false
+
+    /// 当前全局字号；启动时从偏好读取，⌘+/⌘-/⌘0 修改后写回。
+    private(set) var editorFontSize = EditorPreferences.fontSize
 
     // MARK: - 生命周期
 
@@ -145,6 +147,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
     }
 
+    // MARK: - 显示菜单（缩放）
+
+    @objc func zoomIn(_ sender: Any?) {
+        setEditorFontSize(editorFontSize + 1)
+    }
+
+    @objc func zoomOut(_ sender: Any?) {
+        setEditorFontSize(editorFontSize - 1)
+    }
+
+    /// ⌘0 恢复默认 13pt。
+    @objc func resetZoom(_ sender: Any?) {
+        setEditorFontSize(EditorPreferences.defaultFontSize)
+    }
+
+    /// 统一入口：夹取范围、持久化，并同步到所有窗口的所有标签。
+    private func setEditorFontSize(_ size: CGFloat) {
+        guard !isTestMode, !isTerminationInProgress else { return }
+        let clamped = EditorPreferences.clamped(size)
+        guard clamped != editorFontSize else { return }
+
+        editorFontSize = clamped
+        EditorPreferences.fontSize = clamped
+        windowManager?.applyFontSize(clamped)
+    }
+
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
         case #selector(newDocumentAction(_:)),
@@ -152,6 +180,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
              #selector(newWindowAction(_:)),
              #selector(openDocument(_:)):
             return !isTestMode && !isTerminationInProgress
+        case #selector(zoomIn(_:)):
+            return !isTestMode
+                && !isTerminationInProgress
+                && editorFontSize < EditorPreferences.fontSizeRange.upperBound
+        case #selector(zoomOut(_:)):
+            return !isTestMode
+                && !isTerminationInProgress
+                && editorFontSize > EditorPreferences.fontSizeRange.lowerBound
+        case #selector(resetZoom(_:)):
+            return !isTestMode
+                && !isTerminationInProgress
+                && editorFontSize != EditorPreferences.defaultFontSize
         default:
             return true
         }

@@ -13,6 +13,7 @@ enum MainMenu {
         mainMenu.addItem(makeFileMenuItem())
         mainMenu.addItem(makeEditMenuItem())
         mainMenu.addItem(makeSelectionMenuItem())
+        mainMenu.addItem(makeViewMenuItem())
 
         let windowMenuItem = NSMenuItem()
         mainMenu.addItem(windowMenuItem)
@@ -209,6 +210,29 @@ enum MainMenu {
         ))
 
         return menuItem(title: "Selection", submenu: menu)
+    }
+
+    private static func makeViewMenuItem() -> NSMenuItem {
+        let menu = NSMenu(title: "View")
+
+        // ⌘+ / ⌘- / ⌘0：调整全局字号，持久化到 UserDefaults。
+        menu.addItem(item(
+            "Zoom In",
+            #selector(AppDelegate.zoomIn(_:)),
+            "+"
+        ))
+        menu.addItem(item(
+            "Zoom Out",
+            #selector(AppDelegate.zoomOut(_:)),
+            "-"
+        ))
+        menu.addItem(item(
+            "Actual Size",
+            #selector(AppDelegate.resetZoom(_:)),
+            "0"
+        ))
+
+        return menuItem(title: "View", submenu: menu)
     }
 
     private static func makeWindowMenu() -> NSMenu {

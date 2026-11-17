@@ -47,7 +47,8 @@ final class EditorViewController: NSViewController {
             selections: selections.map { TextSelection(range: $0) }
         )
         self.engine = engine
-        self.textView = LineaTextView(engine: engine)
+        // 新标签沿用持久化的全局字号，保证重启和新建标签后缩放不丢。
+        self.textView = LineaTextView(engine: engine, theme: EditorPreferences.theme)
         self.scrollView = NSScrollView()
         self.pendingScrollOrigin = scrollOrigin
 
@@ -227,6 +228,21 @@ final class EditorViewController: NSViewController {
         document.isDirty = false
     }
 
+    /// 应用全局字号；布局引擎会按新行高重建，并保持顶部可见行不跳变。
+    func applyFontSize(_ size: CGFloat) {
+        let oldLineHeight = textView.layoutEngine.lineHeight
+        textView.applyTheme(EditorPreferences.theme(fontSize: size))
+        let newLineHeight = textView.layoutEngine.lineHeight
+
+        // 尚未显示过的后台标签只有待应用的滚动原点（旧行高坐标），
+        // 按行高比例换算，避免首次切过去时落到错误的行。
+        if var pending = pendingScrollOrigin, oldLineHeight > 0 {
+            pending.y *= newLineHeight / oldLineHeight
+            pendingScrollOrigin = pending
+        }
+        syncViewport()
+    }
+
     func replaceTextFromDisk(_ newText: String) {
         let origin = currentScrollOrigin
         let selections = engine.selections
@@ -278,8 +294,6 @@ final class EditorViewController: NSViewController {
     }
 
     // MARK: - 查找替换
-
-    var isFindBarVisible: Bool { findBarVisible }
 
     /// 查找栏可见且已有匹配时，允许把全部查找结果转成多光标。
     var canSelectAllFindMatches: Bool {
