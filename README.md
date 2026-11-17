@@ -12,8 +12,10 @@ Linea 是一个轻量、原生、多光标的 macOS 纯文本编辑器。窗口�
 ## 功能
 
 - 多窗口、每窗口多标签；新建、打开多个文件、保存、另存为。
+- 点击标签栏空白处与 ⌘N / ⌘T 一样新建标签。
 - 未命名文档显示为 `Untitled N`；有未保存修改的标签显示圆点。
 - 行号、当前文档查找与替换、独立撤销栈。
+- 字号可在 10–24pt 之间缩放（⌘+ / ⌘- / ⌘0），调整结果跨启动保留。
 - 跟随系统外观，纯文本编辑器关闭拼写检查、自动更正、智能引号和自动补全。
 - 粘贴始终按纯文本处理，不会带入来源应用的字体和颜色。
 - 保存前检测文件是否被其他程序修改；可覆盖或重新载入。
@@ -23,13 +25,14 @@ Linea 是一个轻量、原生、多光标的 macOS 纯文本编辑器。窗口�
 
 | 操作 | 快捷键 |
 | --- | --- |
-| 新建标签 | ⌘N |
+| 新建标签 | ⌘N / ⌘T |
 | 新建窗口 | ⇧⌘N |
 | 打开文件 | ⌘O |
 | 关闭标签 / 窗口 | ⌘W / ⇧⌘W |
 | 保存 / 另存为 | ⌘S / ⇧⌘S |
 | 查找 / 替换 | ⌘F / ⌥⌘F |
 | 下一个 / 上一个匹配 | ⌘G / ⇧⌘G |
+| 放大 / 缩小 / 实际大小 | ⌘+ / ⌘- / ⌘0 |
 | 选择下一个相同文本 | ⌘D |
 | 选择全部相同文本 | ⌃⌘G |
 | 在选中行尾添加光标 | ⇧⌘L |
@@ -97,20 +100,20 @@ swift test --package-path Packages/LineaCore
 swift test --package-path Packages/LineaTextUI
 ```
 
-仓库不提交生成的 `Linea.xcodeproj`。CI 在 `macos-15`（arm64）上动态选择最新的 Xcode 26，生成工程、运行 XCTest、构建 Release arm64 `.app`、为完整 `.app` 做 ad-hoc 签名并验证签名、校验架构/版本与最低系统版本，然后生成包含 `/Applications` 符号链接的 DMG、挂载复验并输出 `.sha256`。CI 只在推送 `v*` 版本 tag 时运行。
+仓库不提交生成的 `Linea.xcodeproj`。CI 在 `macos-15`（arm64）上动态选择最新的 Xcode 26，PR 阶段先运行测试；推送 `v*` 版本 tag 时再生成工程、运行 XCTest、构建 Release arm64 `.app`、为完整 `.app` 做 ad-hoc 签名并验证签名、校验架构/版本与最低系统版本，然后生成包含 `/Applications` 符号链接的 DMG、挂载复验并输出 `.sha256`。
 
 ## 版本与标签
 
-当前正式版本为 **1.0.2**，版本号遵循语义化版本。`main` 已启用保护分支，禁止直接 push、强制 push 和删除分支，变更必须通过 PR 合并；日常 push 和 PR 不触发 CI，只有推送 `v*` tag 时才运行构建和测试。发布时在通过 CI 的 `main` 提交上创建 annotated tag `vMAJOR.MINOR.PATCH`（本次为 `v1.0.2`）并推送；随后使用该 tag 创建 GitHub Release，并附加 CI 构建的 DMG 与 SHA-256 文件。
+当前正式版本为 **1.1.0**，版本号遵循语义化版本。`main` 已启用保护分支，禁止直接 push、强制 push 和删除分支，变更必须通过 PR 合并；PR 会运行 LineaCore/LineaTextUI 与 App 测试，推送 `v*` tag 时额外构建 Release、做 ad-hoc 签名并生成 DMG。发布时在通过 CI 的 `main` 提交上创建 annotated tag `vMAJOR.MINOR.PATCH`（本次为 `v1.1.0`）并推送；随后使用该 tag 创建 GitHub Release，并附加 CI 构建的 DMG 与 SHA-256 文件。
 
 ## 下载 App
 
-正式版本发布在 GitHub Releases 页面，附件是由 CI 构建并 ad-hoc 签名的 `Linea-1.0.2-macos-arm64.dmg` 和对应的 `Linea-1.0.2-macos-arm64.dmg.sha256`；也可以在 Actions 页面下载最近一次 CI artifact。
+正式版本发布在 GitHub Releases 页面，附件是由 CI 构建并 ad-hoc 签名的 `Linea-1.1.0-macos-arm64.dmg` 和对应的 `Linea-1.1.0-macos-arm64.dmg.sha256`；也可以在 Actions 页面下载最近一次 CI artifact。
 
 下载后建议先校验 SHA-256：
 
 ```bash
-shasum -a 256 -c Linea-1.0.2-macos-arm64.dmg.sha256
+shasum -a 256 -c Linea-1.1.0-macos-arm64.dmg.sha256
 ```
 
 安装步骤：
@@ -134,7 +137,7 @@ shasum -a 256 -c Linea-1.0.2-macos-arm64.dmg.sha256
 - 首版只支持 UTF-8；打开不是合法 UTF-8 的文件会报错。
 - 不包含语法高亮、文件树、插件、项目工作区、自动换行或主题切换。
 - 不恢复全屏、最小化状态；只恢复普通窗口 frame 和会话内容。
-- 行号 gutter、视口布局与绘制由自建引擎完成，固定行高、无自动换行；10 万行加载、多光标与长行行为已纳入自动化测试，发布前另行做人工性能验收。
+- 行号 gutter、视口布局与绘制由自建引擎完成；字号可变但同一字号下行高固定，无自动换行。10 万行加载、多光标与长行行为已纳入自动化测试，发布前另行做人工性能验收。
 - 多光标组合输入只在主选区显示 marked text，其余光标在提交时随文本平移；与 1.0.2 行为一致。
 - 崩溃、系统强制结束进程或断电不属于会话恢复保证范围。
 - 仅使用免费 ad-hoc 签名，未使用 Developer ID 签名和 Apple 公证；首次打开仍需确认，不支持自动更新；不使用自签名证书（无法绕过 Gatekeeper）。
@@ -151,9 +154,10 @@ shasum -a 256 -c Linea-1.0.2-macos-arm64.dmg.sha256
 - [ ] ⌘D、⌃⌘G、⇧⌘L、⌘+点击、Esc 和多光标连续输入、删除、方向键行为正确。
 - [ ] 多光标编辑一次撤销能恢复整次输入；撤销/重做后光标仍保持多个。
 - [ ] 查找、替换、下一个/上一个匹配可用。
+- [ ] ⌘+ / ⌘- / ⌘0 可缩放字号，重启后仍保持；缩放不改变选区与文档内容。
 - [ ] 单光标与多光标下的中文输入法组合输入可用，或已记录限制。
 - [ ] 约 10 MB / 10 万行文本可打开、滚动、编辑、退出保存和恢复；记录行号与滚动响应。
-- [ ] DMG 可挂载，根目录包含 `Linea.app` 和指向 `/Applications` 的符号链接；`.app` 为 arm64、版本 1.0.2/build 3、最低系统版本 14.0，ad-hoc 签名校验通过，图标在 Dock/Finder 中正确显示。
+- [ ] DMG 可挂载，根目录包含 `Linea.app` 和指向 `/Applications` 的符号链接；`.app` 为 arm64、版本 1.1.0/build 7、最低系统版本 14.0，ad-hoc 签名校验通过，图标在 Dock/Finder 中正确显示。
 - [ ] `.sha256` 校验通过。
 - [ ] 从浏览器下载后首次打开不再显示“已损坏”，macOS 14 可通过右键“打开”，macOS 15+ 可通过“系统设置 > 隐私与安全性 > 仍要打开”。
 - [ ] 重启后 `consumed.json` 和旧的 session 目录被清理。

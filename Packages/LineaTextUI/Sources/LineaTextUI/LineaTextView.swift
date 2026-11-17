@@ -17,13 +17,18 @@ public final class LineaTextView:
     TextSurface
 {
     public let engine: EditorEngine
-    public let layoutEngine: CoreTextLayoutEngine
+    /// 字体度量变化时会整体替换；外部只读，滚动几何随新引擎重新计算。
+    public private(set) var layoutEngine: CoreTextLayoutEngine
 
     public var theme: TextTheme {
         didSet {
             renderer.theme = theme
-            lineNumberRuler?.refresh()
-            needsDisplay = true
+            if Self.metricsDiffer(theme, oldValue) {
+                rebuildLayoutEngine()
+            } else {
+                lineNumberRuler?.refresh()
+                needsDisplay = true
+            }
         }
     }
 
@@ -31,11 +36,22 @@ public final class LineaTextView:
     ///
     /// `LineaTextView` 接管了 `engine.onChange`，控制器应设置本属性而不是直接覆盖引擎回调。
     public var onChange: ((EditorChange) -> Void)?
+    /// Esc（`cancelOperation:`）先交给外部处理；返回 true 表示已消费，
+    /// 视图不再折叠多光标。查找栏打开时用它优先收起查找栏。
+    public var onCancelOperation: (() -> Bool)?
 
     /// 光标闪烁状态。视图成为第一响应者后由 Timer 驱动；测试可手动设置。
     public var isCaretVisible = false {
         didSet {
             guard isCaretVisible != oldValue else { return }
+            needsDisplay = true
+        }
+    }
+
+    /// 查找匹配高亮范围（升序）。由控制器根据查找器结果更新，视图只负责绘制。
+    public var findHighlightRanges: [NSRange] = [] {
+        didSet {
+            guard findHighlightRanges != oldValue else { return }
             needsDisplay = true
         }
     }
@@ -182,6 +198,61 @@ public final class LineaTextView:
         needsDisplay = true
     }
 
+    /// 应用新主题。字号、行距或 tab 变化时重建布局引擎并按顶部行保持滚动位置；
+    /// 只改颜色时复用现有行缓存，不产生重新排版。
+    public func applyTheme(_ newTheme: TextTheme) {
+        theme = newTheme
+    }
+
+    private func rebuildLayoutEngine() {
+        let oldEngine = layoutEngine
+        let clipView = enclosingScrollView?.contentView
+        // 以顶部可见行作为锚点：行高变化后仍停留在同一行，而不是跳到别处。
+        let topLine = oldEngine.lineNumber(
+            atY: max(0, clipView?.bounds.minY ?? 0)
+        )
+        let oldOriginX = clipView?.bounds.minX ?? 0
+        let viewportWidth = oldEngine.viewportWidth
+
+        let newEngine = CoreTextLayoutEngine(
+            engine: engine,
+            font: theme.font,
+            tabInterval: theme.tabInterval,
+            lineHeightMultiple: theme.lineHeightMultiple
+        )
+        newEngine.viewportWidth = viewportWidth
+        layoutEngine = newEngine
+        displayedVersion = engine.version
+        verticalAnchorXs = nil
+        extendAnchors = nil
+        updateDocumentFrame()
+
+        if let clipView, let scrollView = enclosingScrollView {
+            let maxX = max(0, frame.width - clipView.bounds.width)
+            let maxY = max(0, frame.height - clipView.bounds.height)
+            let origin = CGPoint(
+                x: min(max(0, oldOriginX), maxX),
+                y: min(max(0, newEngine.y(forLine: topLine)), maxY)
+            )
+            clipView.scroll(to: origin)
+            scrollView.reflectScrolledClipView(clipView)
+        }
+
+        lineNumberRuler?.refresh()
+        inputContext?.invalidateCharacterCoordinates()
+        NSAccessibility.post(element: self, notification: .layoutChanged)
+        needsDisplay = true
+    }
+
+    /// 只有字体度量、tab 或行距变化才需要重建布局；纯颜色切换可复用行缓存。
+    private static func metricsDiffer(_ lhs: TextTheme, _ rhs: TextTheme) -> Bool {
+        abs(CTFontGetSize(lhs.font) - CTFontGetSize(rhs.font)) > 0.01
+            || (CTFontCopyPostScriptName(lhs.font) as String)
+                != (CTFontCopyPostScriptName(rhs.font) as String)
+            || lhs.tabInterval != rhs.tabInterval
+            || lhs.lineHeightMultiple != rhs.lineHeightMultiple
+    }
+
     /// 把文档尺寸同步到 frame；滚动视图据此决定滚动条范围。
     public func updateDocumentFrame() {
         let newSize = NSSize(
@@ -244,7 +315,8 @@ public final class LineaTextView:
                 layout: layoutEngine,
                 selections: engine.selections,
                 caretVisible: isCaretVisible,
-                composition: engine.composition
+                composition: engine.composition,
+                findHighlights: findHighlightRanges
             )
             drawDropIndicator(in: context, dirtyRect: dirtyRect)
         }
@@ -575,6 +647,9 @@ public final class LineaTextView:
             unmarkText()
             return
         }
+        if onCancelOperation?() == true {
+            return
+        }
         _ = collapseSelectionsIfNeeded()
     }
 
@@ -739,9 +814,11 @@ public final class LineaTextView:
         let point = convert(event.locationInWindow, from: nil)
         let index = layoutEngine.index(at: point)
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        // Option 也用于多光标，不能当作普通单击（否则会折叠选区并启动拖拽选择）。
         let isPlainClick = !flags.contains(.command)
             && !flags.contains(.shift)
             && !flags.contains(.control)
+            && !flags.contains(.option)
 
         // 无修饰键单击按在非空选区内：先保留选区，等拖动超过阈值再启动移动拖拽；
         // 若只是单击，在 mouseUp 时再折叠为光标。双击/三击不参与，保留选词/选行。
@@ -833,6 +910,16 @@ public final class LineaTextView:
             appendCursor(at: index)
             return
         }
+        // Option+点击：与 ⌘+点击一致添加/移除光标；配合 Shift 只追加不切换，
+        // 对齐 Sublime / VS Code 在 macOS 上的鼠标多光标习惯。
+        if modifiers.contains(.option) {
+            if modifiers.contains(.shift) {
+                appendCursor(at: index)
+            } else {
+                toggleCursor(at: index)
+            }
+            return
+        }
         if clickCount >= 3 {
             let line = engine.lineNumber(at: index)
             commitSelections(
@@ -870,10 +957,7 @@ public final class LineaTextView:
             guard current.count > 1 else { return }
             current.remove(at: existing)
         } else {
-            guard current.count < SelectionModel.maximumSelections else {
-                NSSound.beep()
-                return
-            }
+            // 光标数量不设上限，整篇文档逐行加光标也允许。
             current.append(.caret(at: index))
         }
         commitSelections(current, source: .multiCursor)
@@ -883,10 +967,6 @@ public final class LineaTextView:
     private func appendCursor(at index: Int) {
         var current = engine.selections
         guard !current.contains(where: { $0.isCaret && $0.range.location == index }) else {
-            return
-        }
-        guard current.count < SelectionModel.maximumSelections else {
-            NSSound.beep()
             return
         }
         current.append(.caret(at: index))
@@ -1643,7 +1723,7 @@ public final class LineaTextView:
                 .map { TextSelection(range: clampedDocumentRange($0.rangeValue)) }
                 .sorted { $0.range.location < $1.range.location }
             if !updated.isEmpty {
-                selections = Array(updated.suffix(10_000))
+                selections = updated
             }
         }
     }
@@ -1766,7 +1846,7 @@ public final class LineaTextView:
         let updated = ranges
             .map { TextSelection(range: clampedDocumentRange($0.rangeValue)) }
             .sorted { $0.range.location < $1.range.location }
-        selections = Array(updated.suffix(10_000))
+        selections = updated
     }
 
     public override func accessibilityNumberOfCharacters() -> Int {

@@ -50,10 +50,4 @@ final class Document: ObservableObject, Identifiable {
         savedSignature = signature
         isDirty = false
     }
-
-    /// 恢复会话时保留快照里的显示名称（未命名文档尤其需要）。
-    func updateDisplayNameForRestore(_ name: String) {
-        guard fileURL == nil, !name.isEmpty else { return }
-        displayName = name
-    }
 }

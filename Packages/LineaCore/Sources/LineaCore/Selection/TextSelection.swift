@@ -34,9 +34,4 @@ public struct TextSelection: Equatable, Hashable, Sendable {
     public var isCaret: Bool {
         range.length == 0
     }
-
-    /// 选区覆盖的范围，便于与 `NSRange` 互操作。
-    public var coveredRange: Range<Int> {
-        range.location..<(range.location + range.length)
-    }
 }

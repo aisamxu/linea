@@ -156,6 +156,48 @@ struct LineaTextViewTests {
         #expect(textView.layoutEngine.layoutCount == 0)
     }
 
+    @Test func rulerClipsOversizedDirtyRectToItsBounds() {
+        let (_, _, ruler) = makeScrollView(text: "a\nb")
+        guard let context = makeBitmapContext(width: 900, height: 600) else {
+            Issue.record("无法创建位图 context")
+            return
+        }
+
+        // 先用黑色填满整块画布作为哨兵，再让 ruler 绘制。
+        context.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 900, height: 600))
+
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
+
+        // macOS 26 的 banner 式 NSRulerView 会把整个滚动视图当作脏矩形传入，
+        // 例如 (0, -64, 900, 600)。ruler 必须把绘制裁剪到自身 bounds，
+        // 否则背景和分隔线会盖住窗口上方的标签栏。
+        ruler.drawHashMarksAndLabels(in: NSRect(x: 0, y: -64, width: 900, height: 600))
+
+        guard let data = context.data else {
+            Issue.record("位图 context 没有数据")
+            return
+        }
+        let pixels = data.assumingMemoryBound(to: UInt8.self)
+        var leaked = 0
+        for y in stride(from: 0, to: 600, by: 10) {
+            for x in stride(from: 100, to: 900, by: 10) {
+                let offset = y * context.bytesPerRow + x * 4
+                if pixels[offset] != 0 || pixels[offset + 1] != 0 || pixels[offset + 2] != 0 {
+                    leaked += 1
+                }
+            }
+        }
+        #expect(leaked == 0, "ruler 绘制越界，污染了自身范围外的像素")
+    }
+
+    @Test func rulerClipsItsLayerToItsOwnBounds() {
+        let (_, _, ruler) = makeScrollView(text: "a")
+        #expect(ruler.layer?.masksToBounds == true)
+    }
+
     // MARK: - 绘制 smoke
 
     @Test func rendererDrawsOnlyVisibleLines() {
@@ -216,6 +258,116 @@ struct LineaTextViewTests {
         #expect(textView.layoutEngine.layoutCount <= 4)
     }
 
+    /// 绘制到可读像素的位图，用于验证光标/查找高亮确实落到正确位置。
+    private func makeFlippedBitmap(
+        width: Int,
+        height: Int
+    ) -> (NSBitmapImageRep, CGContext)? {
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: width,
+            pixelsHigh: height,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ), let context = NSGraphicsContext(bitmapImageRep: rep)?.cgContext else {
+            return nil
+        }
+        return (rep, context)
+    }
+
+    private func render(_ textView: LineaTextView) -> NSBitmapImageRep? {
+        let width = max(1, Int(textView.bounds.width))
+        let height = max(1, Int(textView.bounds.height))
+        guard let (rep, context) = makeFlippedBitmap(width: width, height: height)
+        else { return nil }
+
+        // 位图 context 原点在左下；翻转 CTM 后与视图的 y 向下坐标一致，
+        // 这样 colorAt(x:y:)（原点左上）可直接用视图坐标采样。
+        context.translateBy(x: 0, y: CGFloat(height))
+        context.scaleBy(x: 1, y: -1)
+
+        textView.appearance = NSAppearance(named: .aqua)
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
+        textView.draw(textView.bounds)
+        return rep
+    }
+
+    @Test func everySelectionDrawsItsOwnCaret() {
+        let (_, textView, _) = makeScrollView(text: "\n\n\n")
+        var custom = theme
+        custom.background = .white
+        custom.text = .black
+        custom.caret = .systemRed
+        textView.theme = custom
+        textView.selections = [
+            .caret(at: 0), .caret(at: 1), .caret(at: 2), .caret(at: 3),
+        ]
+        textView.isCaretVisible = true
+
+        guard let rep = render(textView) else {
+            Issue.record("无法渲染多光标位图")
+            return
+        }
+
+        for offset in 0..<4 {
+            let caret = textView.layoutEngine.caretRect(for: offset)
+            let color = rep.colorAt(
+                x: Int(caret.midX),
+                y: Int(caret.midY)
+            )
+            // 每个光标都是红色竖线；只画主光标时其余行会是白色。
+            #expect((color?.redComponent ?? 0) > 0.8)
+            #expect((color?.greenComponent ?? 1) < 0.4)
+        }
+    }
+
+    @Test func findHighlightRangesPaintSystemHighlight() {
+        let (_, textView, _) = makeScrollView(text: "    \nxxxx")
+        var custom = theme
+        custom.background = .white
+        custom.text = .black
+        textView.theme = custom
+        textView.findHighlightRanges = [NSRange(location: 0, length: 2)]
+
+        guard let rep = render(textView) else {
+            Issue.record("无法渲染查找高亮位图")
+            return
+        }
+
+        let highlighted = textView.layoutEngine
+            .rects(for: NSRange(location: 0, length: 2))
+            .first
+        let plain = textView.layoutEngine
+            .rects(for: NSRange(location: 2, length: 2))
+            .first
+        guard let highlighted, let plain else {
+            Issue.record("缺少高亮矩形")
+            return
+        }
+
+        let matchColor = rep.colorAt(
+            x: Int(highlighted.midX),
+            y: Int(highlighted.midY)
+        )
+        let plainColor = rep.colorAt(
+            x: Int(plain.midX),
+            y: Int(plain.midY)
+        )
+        // 系统增量查找高亮为黄色；未命中区域保持背景白色。
+        #expect((matchColor?.redComponent ?? 0) > 0.7)
+        #expect((matchColor?.greenComponent ?? 0) > 0.7)
+        #expect((matchColor?.blueComponent ?? 1) < 0.6)
+        #expect((plainColor?.redComponent ?? 0) > 0.9)
+        #expect((plainColor?.blueComponent ?? 0) > 0.9)
+    }
+
     @Test func scrollRangeToVisibleSmoke() {
         let (scrollView, textView, _) = makeScrollView(
             text: String(repeating: "line\n", count: 999) + "line",
@@ -227,5 +379,58 @@ struct LineaTextViewTests {
         // 无窗口时滚动几何可能不完全生效，只要求不崩溃并保持文档尺寸。
         #expect(scrollView.documentView === textView)
         #expect(textView.frame.height == textView.layoutEngine.documentHeight)
+    }
+
+    @Test func fontSizeThemeScalesEditorAndLineNumberMetrics() {
+        let small = TextTheme.standard(fontSize: 11)
+        let large = TextTheme.standard(fontSize: 24)
+
+        #expect(small.fontSize == 11)
+        #expect(large.fontSize == 24)
+        #expect(large.lineHeight > small.lineHeight)
+        #expect(large.lineNumberFont.pointSize > small.lineNumberFont.pointSize)
+    }
+
+    @Test func applyingLargerThemeRebuildsLayoutAndKeepsTopLine() {
+        let text = (1...200).map { "line \($0)" }.joined(separator: "\n")
+        let (scrollView, textView, ruler) = makeScrollView(
+            text: text,
+            size: NSSize(width: 400, height: 120)
+        )
+        scrollView.contentView.scroll(
+            to: CGPoint(x: 0, y: textView.layoutEngine.y(forLine: 60))
+        )
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        let topLine = textView.layoutEngine.lineNumber(
+            atY: scrollView.contentView.bounds.minY
+        )
+        let oldLineHeight = textView.layoutEngine.lineHeight
+
+        textView.applyTheme(.standard(fontSize: 20))
+
+        #expect(textView.theme.fontSize == 20)
+        #expect(textView.layoutEngine.lineHeight > oldLineHeight)
+        #expect(textView.frame.height == textView.layoutEngine.documentHeight)
+        // 字号变化后仍停在原来的顶部行，不跳回文档开头。
+        #expect(
+            textView.layoutEngine.lineNumber(
+                atY: scrollView.contentView.bounds.minY
+            ) == topLine
+        )
+        #expect(ruler.ruleThickness >= 35)
+    }
+
+    @Test func colorOnlyThemeChangeKeepsLayoutCache() {
+        let (_, textView, _) = makeScrollView(text: "one\ntwo\nthree")
+        _ = textView.layoutEngine.layoutLine(number: 1)
+        let countBefore = textView.layoutEngine.layoutCount
+
+        var custom = textView.theme
+        custom.background = .black
+        custom.text = .white
+        textView.theme = custom
+
+        #expect(textView.layoutEngine.layoutCount == countBefore)
+        #expect(textView.theme.background == .black)
     }
 }

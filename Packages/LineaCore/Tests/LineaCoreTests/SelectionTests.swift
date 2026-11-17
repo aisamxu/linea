@@ -88,13 +88,11 @@ struct SelectionModelTests {
         #expect(model.last == .caret(at: 2))
     }
 
-    @Test func maximumCountKeepsPrimary() {
+    @Test func normalizedKeepsAllSelectionsWithoutLimit() {
+        // 不再有 10,000 上限：全部选区按原顺序保留。
         let input = (0..<5).map { TextSelection.caret(at: $0 * 2) }
-        let model = SelectionModel.normalized(input, textLength: 20, maximumCount: 3)
-        #expect(model.count == 3)
-        #expect(model.last == input.last)
-        #expect(model[0] == input[0])
-        #expect(model[1] == input[1])
+        let model = SelectionModel.normalized(input, textLength: 20)
+        #expect(model == input)
     }
 
     @Test func setReportsChangeAndClamps() {

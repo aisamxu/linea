@@ -49,6 +49,10 @@ final class WindowManager {
             controller.window?.orderFront(nil)
         }
 
+        // 窗口显示后必须同步聚焦编辑器：SwiftUI 标签栏会在窗口出现时把
+        // KeyViewProxy 设为第一响应者，异步聚焦会被覆盖，导致无法输入。
+        controller.focusEditor()
+
         return controller
     }
 
@@ -73,6 +77,13 @@ final class WindowManager {
         }
         activeWindowController?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// 全局字号变化后刷新所有窗口的所有标签。
+    func applyFontSize(_ size: CGFloat) {
+        for controller in windowControllers {
+            controller.applyFontSize(size)
+        }
     }
 
     // MARK: - 打开文件

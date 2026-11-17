@@ -7,7 +7,6 @@ import Foundation
 public enum MultiCursorCommandResult: Equatable, Sendable {
     case updated([TextSelection])
     case noChange
-    case tooMany(limit: Int)
 }
 
 /// Sublime 风格多光标命令的纯逻辑实现。
@@ -19,8 +18,6 @@ public enum MultiCursorCommandResult: Equatable, Sendable {
 /// 匹配使用大小写敏感的字面量搜索，结果不重叠、不循环；
 /// 行边界统一走 `LineIndex`，因此 LF/CR/CRLF/U+2028/U+2029 都正确。
 public enum MultiCursorCommands {
-    public static let maximumSelections = 10_000
-
     // MARK: - ⌘D
 
     /// 选择下一个相同词。
@@ -40,10 +37,6 @@ public enum MultiCursorCommands {
         // 只有光标时，第一次 ⌘D 先选中当前单词，结果会丢弃其他光标。
         if !currentSelections.contains(where: { !$0.isCaret }) {
             return .updated(searchTarget.selections)
-        }
-
-        guard searchTarget.selections.count < maximumSelections else {
-            return .tooMany(limit: maximumSelections)
         }
 
         let searchStart = searchTarget.selections
@@ -67,7 +60,7 @@ public enum MultiCursorCommands {
 
     // MARK: - ⌃⌘G
 
-    /// 选中文档内全部相同词。匹配结果可能超过上限，此时返回 `.tooMany`。
+    /// 选中文档内全部相同词，不限制匹配数量。
     public static func selectAllOccurrences(
         in text: String,
         selections: [TextSelection]
@@ -78,14 +71,7 @@ public enum MultiCursorCommands {
             return .noChange
         }
 
-        let matches = allMatches(
-            of: searchTarget.text,
-            in: string,
-            limit: maximumSelections
-        )
-        guard matches.count <= maximumSelections else {
-            return .tooMany(limit: maximumSelections)
-        }
+        let matches = allMatches(of: searchTarget.text, in: string)
         guard !matches.isEmpty else { return .noChange }
 
         return .updated(matches.map { TextSelection(range: $0) })
@@ -127,9 +113,6 @@ public enum MultiCursorCommands {
             var lineStartOffset = startLine
             while true {
                 caretLocations.insert(lineIndex.contentEnd(at: lineStartOffset))
-                if caretLocations.count > maximumSelections {
-                    return .tooMany(limit: maximumSelections)
-                }
 
                 guard let nextLine = lineIndex.nextLineStart(after: lineStartOffset),
                       nextLine <= endProbe
@@ -209,11 +192,10 @@ public enum MultiCursorCommands {
         return (wordText, [TextSelection(range: word)])
     }
 
-    /// 查找全部不重叠的匹配项；超过 limit 后立即停止并多返回一项用于判断超限。
+    /// 查找全部不重叠的匹配项。
     private static func allMatches(
         of needle: String,
-        in string: NSString,
-        limit: Int
+        in string: NSString
     ) -> [NSRange] {
         var matches: [NSRange] = []
         var searchLocation = 0
@@ -227,9 +209,6 @@ public enum MultiCursorCommands {
             guard match.location != NSNotFound else { break }
 
             matches.append(match)
-            if matches.count > limit {
-                break
-            }
 
             // 不重叠：从本次匹配末尾继续。
             searchLocation = match.location + match.length

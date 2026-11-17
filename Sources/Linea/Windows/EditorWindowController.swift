@@ -182,6 +182,18 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         selectTab(id: session.tabs[index].id)
     }
 
+    /// 同步聚焦当前标签的文本视图；窗口排序前别用，见 `EditorViewController.focusEditorNow()`。
+    func focusEditor() {
+        areaController.currentEditor?.focusEditorNow()
+    }
+
+    /// 把全局字号应用到本窗口的全部标签，包括未显示的后台标签。
+    func applyFontSize(_ size: CGFloat) {
+        for tab in session.tabs {
+            tab.editor.applyFontSize(size)
+        }
+    }
+
     func tab(forFileURL url: URL) -> EditorTab? {
         session.tab(forFileURL: url)
     }
@@ -478,19 +490,23 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
 
     @objc func showFindInterface(_ sender: Any?) {
-        performFindAction(.showFindInterface)
+        session.selectedTab?.editor.showFindBar(replacing: false)
     }
 
     @objc func showReplaceInterface(_ sender: Any?) {
-        performFindAction(.showReplaceInterface)
+        session.selectedTab?.editor.showFindBar(replacing: true)
     }
 
     @objc func findNextMatch(_ sender: Any?) {
-        performFindAction(.nextMatch)
+        session.selectedTab?.editor.findNext()
     }
 
     @objc func findPreviousMatch(_ sender: Any?) {
-        performFindAction(.previousMatch)
+        session.selectedTab?.editor.findPrevious()
+    }
+
+    @objc func selectAllFindMatches(_ sender: Any?) {
+        session.selectedTab?.editor.selectAllFindMatches()
     }
 
     @objc func selectNextOccurrence(_ sender: Any?) {
@@ -508,22 +524,12 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         handleMultiCursorResult(tab.editor.addCursorsToSelectedLines())
     }
 
-    private func performFindAction(_ action: NSTextFinder.Action) {
-        session.selectedTab?.editor.performFindAction(action)
-    }
-
     private func handleMultiCursorResult(_ result: MultiCursorResult) {
         switch result {
         case .updated:
             break
         case .noChange:
             NSSound.beep()
-        case let .tooMany(limit):
-            NSSound.beep()
-            Alerts.error(
-                title: "Too many selections",
-                message: "This command would create more than \(limit) selections. Select a shorter range or fewer lines and try again."
-            )
         }
     }
 
@@ -536,6 +542,9 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         case #selector(selectTabAction(_:)):
             // menuItem.tag 是 1 起的标签编号；超出现有标签数时禁用。
             return menuItem.tag >= 1 && menuItem.tag <= session.tabs.count
+        case #selector(selectAllFindMatches(_:)):
+            // 只有查找栏可见且已有匹配时才有意义。
+            return session.selectedTab?.editor.canSelectAllFindMatches ?? false
         case #selector(closeTabAction(_:)),
              #selector(saveDocument(_:)),
              #selector(saveDocumentAs(_:)),

@@ -12,7 +12,6 @@ import LineaCore
 /// - 选区/光标矩形按行相交计算，不在视图层创建逐光标子视图。
 public final class CoreTextLayoutEngine: TextLayoutEngine {
     public let lineHeight: CGFloat
-    public let baselineOffset: CGFloat
 
     public var documentHeight: CGFloat {
         CGFloat(lineCount) * lineHeight
@@ -58,7 +57,6 @@ public final class CoreTextLayoutEngine: TextLayoutEngine {
             (CTFontGetAscent(font) + CTFontGetDescent(font) + CTFontGetLeading(font))
                 * lineHeightMultiple
         )
-        self.baselineOffset = CTFontGetAscent(font)
         let interval = max(tabInterval, 0.1)
         self.tabInterval = interval
         self.baseAdvance = Self.monospaceAdvance(font: font)

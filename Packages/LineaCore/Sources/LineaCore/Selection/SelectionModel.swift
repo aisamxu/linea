@@ -6,10 +6,8 @@ import Foundation
 /// - 保持用户操作产生的顺序，**最后一个选区是主选区**（输入法候选窗、滚动跟随都依赖它）。
 /// - 所有选区都 clamp 到 `0...textLength`。
 /// - 完全重复的选区去重，重叠的选区合并；相邻但不重叠的选区保持独立。
-/// - 选区数量上限默认 10,000，与 1.0.2 的 ⌘D/⇧⌘L 上限一致。
+/// - 不限制选区数量，⇧⌘L 可以把整篇文档的每一行都变成光标。
 public struct SelectionModel: Equatable, Sendable {
-    public static let maximumSelections = 10_000
-
     public private(set) var selections: [TextSelection]
 
     public init(selections: [TextSelection] = [.caret(at: 0)]) {
@@ -37,14 +35,9 @@ public struct SelectionModel: Equatable, Sendable {
     @discardableResult
     public mutating func set(
         _ input: [TextSelection],
-        textLength: Int,
-        maximumCount: Int = SelectionModel.maximumSelections
+        textLength: Int
     ) -> Bool {
-        let normalized = Self.normalized(
-            input,
-            textLength: textLength,
-            maximumCount: maximumCount
-        )
+        let normalized = Self.normalized(input, textLength: textLength)
         guard normalized != selections else { return false }
         selections = normalized
         return true
@@ -58,20 +51,16 @@ public struct SelectionModel: Equatable, Sendable {
     /// clamp + 去重 + 合并重叠。
     public static func normalized(
         _ input: [TextSelection],
-        textLength: Int,
-        maximumCount: Int = SelectionModel.maximumSelections
+        textLength: Int
     ) -> [TextSelection] {
-        guard maximumCount > 0 else { return [.caret(at: 0)] }
-
-        var clamped = (input.isEmpty ? [.caret(at: 0)] : input).map {
+        let clamped = (input.isEmpty ? [.caret(at: 0)] : input).map {
             Self.clamped($0, to: textLength)
         }
 
-        // 超出上限时保留前面的选区，并强制保留最后一个（主选区）。
-        if clamped.count > maximumCount {
-            var limited = Array(clamped.prefix(maximumCount - 1))
-            limited.append(clamped[clamped.count - 1])
-            clamped = limited
+        // 常见路径：⌘D/⌃⌘G/⇧⌘L 产生的选区已按位置严格升序且互不重叠，
+        // 直接返回。否则下面的两两比较在整篇文档级别会退化成 O(n²)。
+        if isStrictlyAscendingNonOverlapping(clamped) {
+            return clamped
         }
 
         var result: [TextSelection] = []
@@ -123,6 +112,26 @@ public struct SelectionModel: Equatable, Sendable {
     }
 
     // MARK: - 范围关系
+
+    /// 是否严格升序且互不重叠。
+    ///
+    /// 只用于 `normalized` 的快速路径：满足该条件时无需去重/合并，
+    /// 也不能把「光标正好停在选区首尾」误判为重叠。
+    private static func isStrictlyAscendingNonOverlapping(
+        _ selections: [TextSelection]
+    ) -> Bool {
+        guard selections.count > 1 else { return true }
+        for index in 1..<selections.count {
+            let previous = selections[index - 1].range
+            let current = selections[index].range
+            guard current.location > previous.location,
+                  previous.location + previous.length <= current.location
+            else {
+                return false
+            }
+        }
+        return true
+    }
 
     /// 两个选区是否重叠。零长光标落在另一个选区内部视为重叠，
     /// 光标停在选区首尾则不算（这是文本编辑器的常规行为）。

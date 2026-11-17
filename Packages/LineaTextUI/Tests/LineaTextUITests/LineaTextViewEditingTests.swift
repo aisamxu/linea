@@ -286,6 +286,32 @@ struct LineaTextViewEditingTests {
         #expect(view.engine.selections == [.caret(at: 0), .caret(at: 6)])
     }
 
+    @Test func optionClickAddsAndRemovesCursors() {
+        let view = makeView("alpha beta")
+        view.select(at: point(at: 0, in: view))
+        view.select(at: point(at: 3, in: view), modifiers: .option)
+        #expect(view.engine.selections == [.caret(at: 0), .caret(at: 3)])
+
+        view.select(at: point(at: 3, in: view), modifiers: .option)
+        #expect(view.engine.selections == [.caret(at: 0)])
+    }
+
+    @Test func shiftOptionClickAppendsCursorWithoutToggling() {
+        let view = makeView("alpha beta")
+        view.select(
+            at: point(at: 6, in: view),
+            modifiers: [.shift, .option]
+        )
+        #expect(view.engine.selections == [.caret(at: 0), .caret(at: 6)])
+
+        // Shift+Option 只追加：再次点击同一位置不会移除光标。
+        view.select(
+            at: point(at: 6, in: view),
+            modifiers: [.shift, .option]
+        )
+        #expect(view.engine.selections == [.caret(at: 0), .caret(at: 6)])
+    }
+
     @Test func escapeCollapsesSelectionsToPrimary() {
         let view = makeView("alpha beta alpha")
         view.select(at: point(at: 1, in: view), clickCount: 2)
