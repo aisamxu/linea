@@ -13,8 +13,14 @@ import Foundation
 public final class PieceTreeBuffer: TextBuffer {
     // MARK: - 常量
 
-    /// 单个 piece 的目标上限（UTF-16 code unit）。8192 约等于 16 KB。
-    private static let chunkSize = 8 * 1024
+    /// 单个 piece 的目标上限（UTF-16 code unit）。2048 约等于 4 KB。
+    /// 块越小，编辑拆分时需要重算行统计的文本越少；块数增加带来的
+    /// AVL 深度增长可以忽略，piece 数上限由压缩阈值兜底。
+    private static let chunkSize = 2 * 1024
+
+    /// 行号查询的采样间隔：每 64 个 code unit 记录一次累计终止符数，
+    /// 使 prefixBreakCount 在 piece 内只需扫描不足一个采样块。
+    private static let breakSampleInterval = 64
 
     /// add 缓冲区超过 1 MB 时必须压缩。
     private static let addCompactionLimit = 1_048_576
@@ -238,8 +244,9 @@ public final class PieceTreeBuffer: TextBuffer {
     ///
     /// 只统计 offset 之前已经完整出现的终止符：offset 停在 CRLF 两个 code unit
     /// 中间时，这个 CRLF 还不算结束，offset 仍属于前一行。
-    /// 通过聚合信息整块累加左子树，只扫描 offset 所在的那个 piece，
-    /// 因此复杂度是 O(log n + chunkSize)。
+    /// 通过聚合信息整块累加左子树，定位到 offset 所在的 piece 后，
+    /// 用每 64 个 code unit 的累计采样值跳过大部分文本，
+    /// 因此复杂度是 O(log n + 采样间隔)。
     private func prefixBreakCount(upTo offset: Int) -> Int {
         guard offset > 0, let root else { return 0 }
         var count = 0
@@ -249,42 +256,14 @@ public final class PieceTreeBuffer: TextBuffer {
 
         while let current = node {
             if let piece = current.piece {
-                let pieceStart = consumed
                 let take = min(offset - consumed, piece.length)
-                let units = sourceUnits(for: piece.source)
-                var index = 0
-                var prevCR = previousEndsWithCR
-                while index < take {
-                    let codeUnit = units[piece.start + index]
-                    if codeUnit == 0x0D {
-                        let nextGlobal = pieceStart + index + 1
-                        let hasNextLF =
-                            nextGlobal < length && character(at: nextGlobal) == 0x0A
-                        if hasNextLF {
-                            // LF 也在 [0, offset) 内，CRLF 才完整。
-                            if nextGlobal < offset {
-                                count += 1
-                                if index + 1 < take { index += 1 }
-                                prevCR = false
-                            } else {
-                                // 停在 CRLF 中间：CR 尚未构成终止符。
-                                prevCR = true
-                            }
-                        } else {
-                            count += 1
-                            prevCR = true
-                        }
-                    } else if codeUnit == 0x0A {
-                        if !prevCR { count += 1 }
-                        prevCR = false
-                    } else if codeUnit == 0x2028 || codeUnit == 0x2029 {
-                        count += 1
-                        prevCR = false
-                    } else {
-                        prevCR = false
-                    }
-                    index += 1
-                }
+                count += prefixBreakCount(
+                    in: piece,
+                    take: take,
+                    pieceStart: consumed,
+                    offset: offset,
+                    previousEndsWithCR: previousEndsWithCR
+                )
                 break
             }
 
@@ -305,6 +284,87 @@ public final class PieceTreeBuffer: TextBuffer {
                 node = current.right
             }
         }
+        return count
+    }
+
+    /// 统计单个 piece 前缀中完整终止符的数量。
+    ///
+    /// 采样值给出 `localStart` 之前的累计数；剩下的不足 64 个 code unit
+    /// 按与整树相同的 CRLF 规则扫描，并处理跨 piece 的 CR/LF 组合。
+    private func prefixBreakCount(
+        in piece: Piece,
+        take: Int,
+        pieceStart: Int,
+        offset: Int,
+        previousEndsWithCR: Bool
+    ) -> Int {
+        guard take > 0 else { return 0 }
+
+        // 短片段没有采样数组，直接从头扫描。
+        let hasSamples = !piece.breakSamples.isEmpty
+        let block = hasSamples ? take / Self.breakSampleInterval : 0
+        let localStart = hasSamples ? block * Self.breakSampleInterval : 0
+        var count = hasSamples ? Int(piece.breakSamples[block]) : 0
+        let units = sourceUnits(for: piece.source)
+
+        // 采样值把片段开头的 LF 当作独立终止符；若左侧片段以 CR 结尾，
+        // 它是跨 piece CRLF 的后半段，需要扣掉一次。
+        if localStart > 0,
+           previousEndsWithCR,
+           units[piece.start] == 0x0A
+        {
+            count -= 1
+        }
+
+        // 采样累计值只统计“最后一个 code unit 已进入前缀”的终止符，
+        // 因此跨采样边界的 CRLF 尚未计入。尾部扫描遇到 LF 时应正常计一次；
+        // 只有从片段开头扫描时，左侧片段已计入的 CR 才需要抑制这个 LF。
+        var prevCR = localStart == 0 && previousEndsWithCR
+
+        var index = localStart
+        while index < take {
+            let codeUnit = units[piece.start + index]
+            if codeUnit == 0x0D {
+                let nextGlobal = pieceStart + index + 1
+                let hasNextLF =
+                    nextGlobal < length && character(at: nextGlobal) == 0x0A
+                if hasNextLF {
+                    // LF 也在 [0, offset) 内，CRLF 才完整。
+                    if nextGlobal < offset {
+                        count += 1
+                        if index + 1 < take { index += 1 }
+                        prevCR = false
+                    } else {
+                        // 停在 CRLF 中间：CR 尚未构成终止符。
+                        prevCR = true
+                    }
+                } else {
+                    count += 1
+                    prevCR = true
+                }
+            } else if codeUnit == 0x0A {
+                if !prevCR { count += 1 }
+                prevCR = false
+            } else if codeUnit == 0x2028 || codeUnit == 0x2029 {
+                count += 1
+                prevCR = false
+            } else {
+                prevCR = false
+            }
+            index += 1
+        }
+
+        // 采样边界恰好是 piece 末尾、且 piece 以 CR 结尾时，采样值没有计入
+        // 这个 CR；尾部扫描又为空，需要看文档中的下一个字符补判。
+        if localStart > 0, localStart == take, take == piece.length, piece.endsWithCR {
+            let nextGlobal = pieceStart + piece.length
+            let hasNextLF =
+                nextGlobal < length && character(at: nextGlobal) == 0x0A
+            if !hasNextLF {
+                count += 1
+            }
+        }
+
         return count
     }
 
@@ -531,6 +591,9 @@ public final class PieceTreeBuffer: TextBuffer {
         let breaks: Int
         let startsWithLF: Bool
         let endsWithCR: Bool
+        /// 每 64 个 code unit 边界处的累计终止符数（长度为 k 的终止符
+        /// 要等最后一个 code unit 进入前缀后才计入），用于行号查询走二分采样。
+        let breakSamples: [UInt16]
     }
 
     private final class Node {
@@ -655,26 +718,53 @@ public final class PieceTreeBuffer: TextBuffer {
         units: [UInt16]
     ) -> Piece {
         var breaks = 0
+        // 短片段（编辑产生的新增文本）不值得为采样分配数组；
+        // 查询时会直接扫描不足 64 个 code unit。
+        let tracksSamples = length >= breakSampleInterval
+        var samples: [UInt16] = []
+        if tracksSamples {
+            samples.reserveCapacity(length / breakSampleInterval + 1)
+        }
+
+        // 单遍同时统计终止符和采样值：
+        // - CRLF 延迟到 LF 处理，保证只在 LF 位置计入一次；
+        // - 采样值记录“最后一个 code unit 已进入前缀”的完整终止符数，
+        //   因此查询停在 CRLF 中间时不会提前计数。
         var index = 0
         while index < length {
+            if tracksSamples, index % breakSampleInterval == 0 {
+                samples.append(UInt16(breaks))
+            }
+
             let codeUnit = units[start + index]
             if codeUnit == 0x0D {
-                breaks += 1
                 if index + 1 < length, units[start + index + 1] == 0x0A {
-                    index += 1
+                    // CRLF 由下一个 LF 统一计数。
+                } else {
+                    breaks += 1
                 }
             } else if codeUnit == 0x0A || codeUnit == 0x2028 || codeUnit == 0x2029 {
                 breaks += 1
             }
             index += 1
         }
+
+        // 长度正好落在采样边界时，循环内没有机会记录末尾累计值。
+        // 采样值表示“已完整结束”的终止符：片段末尾的 CR 可能和下一片段的
+        // LF 组成 CRLF，因此这里先不计入，查询时再按文档相邻字符补判。
+        if tracksSamples, length % breakSampleInterval == 0 {
+            let endsWithCR = units[start + length - 1] == 0x0D
+            samples.append(UInt16(endsWithCR ? breaks - 1 : breaks))
+        }
+
         return Piece(
             source: source,
             start: start,
             length: length,
             breaks: breaks,
             startsWithLF: units[start] == 0x0A,
-            endsWithCR: units[start + length - 1] == 0x0D
+            endsWithCR: units[start + length - 1] == 0x0D,
+            breakSamples: samples
         )
     }
 

@@ -206,6 +206,49 @@ struct PieceTreeBufferTests {
         }
     }
 
+    /// 大文本 + 随机编辑：覆盖采样间隔、piece 边界和跨 piece CRLF。
+    @Test func sampledLineQueriesMatchReferenceAfterEdits() {
+        var rng = SeededGenerator(seed: 0xB16B00B5)
+        let alphabet = ["a", "b", "中", "😀", " ", "\n", "\r", "\r\n", "\u{2028}", "\u{2029}"]
+        let replacements = ["", "x", "中", "😀", "\n", "\r\n", "ab\r\ncd"]
+
+        var text = ""
+        while (text as NSString).length < 5_000 {
+            text += alphabet[Int(rng.next() % UInt64(alphabet.count))]
+        }
+        var reference = ReferenceBuffer(text)
+        let buffer = PieceTreeBuffer(text: text)
+        assertLineModel(reference.string, buffer: buffer)
+
+        for step in 0..<12 {
+            var edits: [TextEdit] = []
+            var cursor = 0
+            for _ in 0..<3 {
+                let available = reference.units.count - cursor
+                guard available > 0 else { break }
+                let location = cursor + Int(rng.next() % UInt64(available))
+                let maxLength = min(80, reference.units.count - location)
+                let length = Int(rng.next() % UInt64(maxLength + 1))
+                let replacement = replacements[Int(rng.next() % UInt64(replacements.count))]
+                edits.append(
+                    TextEdit(
+                        range: NSRange(location: location, length: length),
+                        replacement: replacement
+                    )
+                )
+                cursor = location + length + 1
+            }
+
+            buffer.apply(edits: edits)
+            reference.apply(edits)
+            assertLineModel(
+                reference.string,
+                buffer: buffer
+            )
+            #expect(buffer.string == reference.string, "step \(step)")
+        }
+    }
+
     // MARK: - 工具
 
     private func assertLineModel(
@@ -229,10 +272,16 @@ struct PieceTreeBufferTests {
         }
 
         // 覆盖所有位置：普通字符、终止符内部、文档边界。
+        // 三个指针随 offset 单调前进，避免对每个 offset 重新扫描 breaks。
+        var lineIndex = 0
+        var contentEndIndex = 0
+        var nextBreakIndex = 0
         for offset in 0...units.count {
-            let prefix = breaks.filter { $0.end <= offset }
-            let expectedLine = prefix.count + 1
-            let expectedLineStart = prefix.last?.end ?? 0
+            while lineIndex < breaks.count, breaks[lineIndex].end <= offset {
+                lineIndex += 1
+            }
+            let expectedLine = lineIndex + 1
+            let expectedLineStart = lineIndex > 0 ? breaks[lineIndex - 1].end : 0
             #expect(
                 buffer.lineNumber(at: offset) == expectedLine,
                 "offset \(offset) 行号，文本 \(debugText(units))"
@@ -242,13 +291,27 @@ struct PieceTreeBufferTests {
                 "offset \(offset) 行首，文本 \(debugText(units))"
             )
 
-            let contentEnd = breaks.first { $0.start >= expectedLineStart }?.start ?? units.count
+            while contentEndIndex < breaks.count,
+                  breaks[contentEndIndex].start < expectedLineStart
+            {
+                contentEndIndex += 1
+            }
+            let contentEnd = contentEndIndex < breaks.count
+                ? breaks[contentEndIndex].start
+                : units.count
             #expect(
                 buffer.contentEnd(at: offset) == contentEnd,
                 "offset \(offset) 内容结束，文本 \(debugText(units))"
             )
 
-            let nextStart = breaks.first { $0.start >= offset }?.end
+            while nextBreakIndex < breaks.count,
+                  breaks[nextBreakIndex].start < offset
+            {
+                nextBreakIndex += 1
+            }
+            let nextStart = nextBreakIndex < breaks.count
+                ? breaks[nextBreakIndex].end
+                : nil
             #expect(
                 buffer.nextLineStart(after: offset) == nextStart,
                 "offset \(offset) 下一行首，文本 \(debugText(units))"

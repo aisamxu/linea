@@ -42,6 +42,31 @@
 - 打开/滚动/内存：同一工程的 `--baseline` 模式，函数 `testOpenHundredThousandLines`、`testScrollHundredThousandLines`、`testMemoryHundredThousandLines`
 - 历史数据与补丁说明见 [`Documentation/History/STTextViewPatches.md`](History/STTextViewPatches.md)（Phase 5 删除 Vendor 时归档）
 
+## LineaCore Phase 1（2026-11-17）
+
+### 测量条件
+
+- 机器同上；`swift test -c release --package-path Packages/LineaCore`
+- 只测文本内核，不含布局/绘制；每组取 3 次最小值
+- 性能测试位于 `Packages/LineaCore/Tests/LineaCoreTests/LineaCorePerformanceTests.swift`
+- 结构参数：piece 目标 2048 UTF-16 code unit；行号采样间隔 64 code unit；piece 数上限 `max(2048, length / 1024)`
+
+### 实测
+
+| 场景 | 实测 | 目标 |
+| --- | ---: | ---: |
+| 2 MB 文本 + 500 个分散插入 | 2.2–3.9 ms | ≤ 5 ms |
+| 10 MB 文本 + 单次插入 | 0.010–0.017 ms | ≤ 2 ms |
+| 10 万行 `lineNumber(at:)` | 0.12–0.13 µs/次 | ≤ 1 µs/次 |
+| 10 万行 + 500 光标插入 + 撤销（核心） | 2.6–3.6 ms | — |
+
+行号查询最初按 piece 内逐 code unit 扫描，100k 行实测约 5 µs/次；改为每 64 个 code unit
+记录累计终止符数后降到 0.13 µs/次。piece 从 8192 缩到 2048 后，500 次批量编辑从约
+5–6 ms 降到 2–3 ms，代价是 AVL 树节点增多，由压缩阈值兜底。
+
+Debug 测试只保留宽松护栏（2 MB/500 edits < 250 ms、10 MB 单编辑 < 50 ms、
+行号 < 20 µs/次），防止数量级退化，不作为性能结论。
+
 ## 1.1.0 目标（Phase 5 验收）
 
 本机 Release，900×600，中位数（best-of-5）：
