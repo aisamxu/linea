@@ -31,6 +31,9 @@ public final class LineaTextView:
     ///
     /// `LineaTextView` 接管了 `engine.onChange`，控制器应设置本属性而不是直接覆盖引擎回调。
     public var onChange: ((EditorChange) -> Void)?
+    /// Esc（`cancelOperation:`）先交给外部处理；返回 true 表示已消费，
+    /// 视图不再折叠多光标。查找栏打开时用它优先收起查找栏。
+    public var onCancelOperation: (() -> Bool)?
 
     /// 光标闪烁状态。视图成为第一响应者后由 Timer 驱动；测试可手动设置。
     public var isCaretVisible = false {
@@ -582,6 +585,9 @@ public final class LineaTextView:
         // 组合中 Esc 取消输入法组合，buffer 与历史保持不变。
         if engine.isComposing {
             unmarkText()
+            return
+        }
+        if onCancelOperation?() == true {
             return
         }
         _ = collapseSelectionsIfNeeded()

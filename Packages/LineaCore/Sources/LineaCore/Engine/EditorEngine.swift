@@ -24,10 +24,6 @@ public final class EditorEngine {
     public var isEditable = true
     public private(set) var composition: CompositionState?
     public var onChange: ((EditorChange) -> Void)?
-    /// 文本即将变化（编辑、撤销/重做、载入）前的回调。
-    /// NSTextFinder 要求在字符串修改前调用 `noteClientStringWillChange`，
-    /// 否则增量查找与替换可能继续使用旧文本缓存。
-    public var onWillChange: (() -> Void)?
 
     /// 可注入时钟，测试用它精确控制连续键入的合并窗口。
     private let now: () -> TimeInterval
@@ -260,8 +256,6 @@ public final class EditorEngine {
         selections: [TextSelection] = [.caret(at: 0)],
         markClean: Bool = true
     ) {
-        // 重载同样改变客户端字符串，先让查找器失效旧缓存。
-        onWillChange?()
         buffer = PieceTreeBuffer(text: text)
         navigation = DefaultTextNavigationProvider(buffer: buffer)
         lineIndex = LineIndex(buffer: buffer)
@@ -388,8 +382,6 @@ public final class EditorEngine {
         let selectionBefore = selectionModel.selections
         let versionBefore = buffer.version
         let lineCountBefore = buffer.lineCount
-        // 字符串即将变化：先通知查找栏等外部缓存，再原子应用编辑。
-        onWillChange?()
 
         // 批次非法时 buffer 原子回退并返回空数组：不写历史、不置脏、不发通知。
         let applied = buffer.apply(edits: effective)
@@ -435,8 +427,6 @@ public final class EditorEngine {
         let versionBefore = buffer.version
         let lineCountBefore = buffer.lineCount
         let edits = forward ? transaction.edits : transaction.inverseEdits
-        // 撤销/重做同样在修改字符串前通知查找器。
-        onWillChange?()
 
         let applied = buffer.apply(edits: edits)
         guard !applied.isEmpty else { return false }

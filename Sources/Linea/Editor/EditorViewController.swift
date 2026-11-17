@@ -14,21 +14,18 @@ final class EditorViewController: NSViewController {
     let textView: LineaTextView
     let engine: EditorEngine
 
-    private let textFinder = NSTextFinder()
+    let findBar = FindBarView()
+    private var findBarHeightConstraint: NSLayoutConstraint!
     private var lineNumberRuler: LineNumberRulerView?
     private var pendingScrollOrigin: CGPoint?
 
-    private var finderMatchesObservation: NSKeyValueObservation?
-    private var findBarVisibleObservation: NSKeyValueObservation?
-    /// 查找栏搜索框的文本变化通知；只保留一个 observer。
-    private var findFieldObserver: NSObjectProtocol?
-    private weak var observedFindField: NSSearchField?
-    /// 查找器发布的全量增量匹配；非空时是绘制高亮的权威来源。
-    private var finderMatchRanges: [NSRange] = []
-    /// 搜索框文本变化后本地立即扫描出的匹配，用于等待查找器全量结果的空窗期。
-    private var quickMatchRanges: [NSRange] = []
-    /// 当前查找字符串，编辑文本后据此刷新本地高亮。
-    private var lastFindString = ""
+    private var findBarVisible = false
+    private var findOptions = FindBarView.Options()
+    /// 当前查询的全部匹配（升序）；高亮、导航与替换都以它为准。
+    private var findMatches: [NSRange] = []
+    private var currentMatchIndex: Int?
+    /// 最近一次查询；查找栏收起后 ⌘G/⇧⌘G 仍可继续导航。
+    private var lastFindQuery = ""
 
     /// 退出写会话期间临时关闭编辑能力，防止快照之后的新修改丢失。
     private(set) var isEditingEnabled = true
@@ -57,7 +54,7 @@ final class EditorViewController: NSViewController {
         super.init(nibName: nil, bundle: nil)
 
         configureScrollView()
-        configureFinding()
+        configureFindBar()
         observeChanges()
     }
 
@@ -70,12 +67,24 @@ final class EditorViewController: NSViewController {
 
     override func loadView() {
         let container = NSView()
+
+        findBar.translatesAutoresizingMaskIntoConstraints = false
+        findBar.isHidden = true
+        container.addSubview(findBar)
+
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(scrollView)
+
+        // 查找栏收起时高度为 0，编辑区仍占满整个容器。
+        findBarHeightConstraint = findBar.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
+            findBar.topAnchor.constraint(equalTo: container.topAnchor),
+            findBar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            findBar.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            findBarHeightConstraint,
             scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            scrollView.topAnchor.constraint(equalTo: container.topAnchor),
+            scrollView.topAnchor.constraint(equalTo: findBar.bottomAnchor),
             scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
         view = container
@@ -136,41 +145,33 @@ final class EditorViewController: NSViewController {
         )
     }
 
-    private func configureFinding() {
-        textFinder.client = textView
-        textFinder.findBarContainer = scrollView
-        textFinder.isIncrementalSearchingEnabled = true
-        // 系统“变暗内容视图”只对原生内容视图生效；自绘视图改为读取
-        // incrementalMatchRanges 自己绘制高亮（系统文档推荐路径）。
-        textFinder.incrementalSearchingShouldDimContentView = false
-
-        // 查找器在后台搜索完成时更新匹配范围（主队列），据此驱动自绘高亮。
-        finderMatchesObservation = textFinder.observe(
-            \.incrementalMatchRanges,
-            options: [.new]
-        ) { [weak self] finder, _ in
-            self?.updateFinderMatchRanges(
-                finder.incrementalMatchRanges.map(\.rangeValue)
-            )
+    private func configureFindBar() {
+        findBar.onQueryChanged = { [weak self] _ in
+            self?.search(selectFirst: true)
         }
-
-        // Escape 等路径由查找器自行收起查找栏，KVO 保证高亮同步清除。
-        findBarVisibleObservation = scrollView.observe(
-            \.isFindBarVisible,
-            options: [.new]
-        ) { [weak self] scrollView, _ in
+        findBar.onOptionsChanged = { [weak self] options in
             guard let self else { return }
-            if scrollView.isFindBarVisible {
-                self.observeFindFieldIfNeeded()
-                self.applyFindHighlights()
-            } else {
-                self.clearFindHighlights()
-            }
+            self.findOptions = options
+            self.search(selectFirst: true)
         }
+        findBar.onNext = { [weak self] in self?.findNext() }
+        findBar.onPrevious = { [weak self] in self?.findPrevious() }
+        findBar.onSelectAllMatches = { [weak self] in
+            self?.selectAllFindMatches()
+        }
+        findBar.onReplace = { [weak self] replacement in
+            self?.replaceCurrentMatch(with: replacement)
+        }
+        findBar.onReplaceAll = { [weak self] replacement in
+            self?.replaceAllMatches(with: replacement)
+        }
+        findBar.onClose = { [weak self] in self?.closeFindBar() }
 
-        // NSTextFinder 要求字符串修改前失效缓存，否则增量查找会继续用旧全文。
-        engine.onWillChange = { [weak self] in
-            self?.textFinder.noteClientStringWillChange()
+        // 查找栏可见时 Esc 优先收起查找栏，而不是折叠多光标。
+        textView.onCancelOperation = { [weak self] in
+            guard let self, self.findBarVisible else { return false }
+            self.closeFindBar()
+            return true
         }
     }
 
@@ -189,8 +190,8 @@ final class EditorViewController: NSViewController {
             if self.engine.isDirty, !self.document.isDirty {
                 self.document.isDirty = true
             }
-            // 文本变化后查找器的增量结果会滞后，先用本地扫描刷新高亮。
-            self.refreshQuickMatchesAfterTextChange()
+            // 文本变化后立即按当前查询重算匹配，高亮与计数保持同步。
+            self.refreshFindMatchesAfterTextChange()
         }
     }
 
@@ -210,8 +211,8 @@ final class EditorViewController: NSViewController {
         textView.commitPendingInput()
         // 冻结/解冻是历史边界：解冻后的第一次键入不能与冻结前合并成一步。
         engine.breakUndoCoalescing()
-        // 查找栏里的 Replace 会绕过普通插入路径，退出期间直接收起。
-        textFinder.performAction(.hideFindInterface)
+        // 查找替换会绕过普通插入路径，退出冻结期间直接收起查找栏。
+        closeFindBar()
         textView.isEditable = false
     }
 
@@ -233,8 +234,8 @@ final class EditorViewController: NSViewController {
         // 重载清空历史并保持 clean；旧选区按新文本长度 clamp。
         engine.load(text: newText, selections: selections, markClean: true)
         textView.reloadData()
-        // load 不触发 onChange，查找栏若仍打开需手动刷新高亮。
-        refreshQuickMatchesAfterTextChange()
+        // load 不触发 onChange，查找栏若仍打开需手动刷新匹配。
+        refreshFindMatchesAfterTextChange()
 
         pendingScrollOrigin = origin
         DispatchQueue.main.async { [weak self] in
@@ -278,130 +279,263 @@ final class EditorViewController: NSViewController {
 
     // MARK: - 查找替换
 
-    func performFindAction(_ action: NSTextFinder.Action) {
-        textFinder.performAction(action)
-
-        switch action {
-        case .showFindInterface, .showReplaceInterface:
-            // 查找栏恢复上次查找字符串时不会触发 textDidChange，需要主动接管。
-            observeFindFieldIfNeeded()
-        case .hideFindInterface:
-            clearFindHighlights()
-            lastFindString = ""
-        case .selectAll, .selectAllInSelection,
-             .nextMatch, .previousMatch,
-             .replace, .replaceAll, .replaceAndFind, .replaceAllInSelection:
-            // 这些动作以查找器当前匹配为准，去掉本地兜底，避免与选区/替换结果重叠。
-            quickMatchRanges = []
-            applyFindHighlights()
-        default:
-            break
-        }
-    }
+    var isFindBarVisible: Bool { findBarVisible }
 
     /// 查找栏可见且已有匹配时，允许把全部查找结果转成多光标。
     var canSelectAllFindMatches: Bool {
-        guard scrollView.isFindBarVisible else { return false }
-        return !effectiveFindMatchRanges.isEmpty
+        findBarVisible && !findMatches.isEmpty
+    }
+
+    /// 显示查找栏。打开时优先用主选区的单行文本预填搜索框。
+    func showFindBar(replacing: Bool) {
+        // 组合期间 buffer 里还没有 marked text，先提交再查找。
+        textView.commitPendingInput()
+
+        // 多光标查找前折叠为主选区，行为与 1.0.2 一致。
+        let primary = engine.selections.last
+        let selectedText: String?
+        if let primary, primary.range.length > 0 {
+            let text = engine.substring(in: primary.range)
+            // 搜索框是单行控件；跨行选区不预填，避免把换行塞进查询。
+            selectedText = text.contains(where: { $0.isNewline }) ? nil : text
+        } else {
+            selectedText = nil
+        }
+        if engine.selections.count > 1, let primary {
+            textView.setSelections([primary])
+        }
+
+        findBarVisible = true
+        findBar.isHidden = false
+        findBar.isReplaceRowVisible = replacing
+        findBarHeightConstraint.constant = findBar.preferredHeight
+        findBar.setOptions(findOptions)
+        if let selectedText {
+            findBar.setQuery(selectedText, selectAll: true)
+        } else {
+            findBar.setQuery(lastFindQuery, selectAll: true)
+        }
+        view.layoutSubtreeIfNeeded()
+        syncViewport()
+        search(selectFirst: true)
+        findBar.focusSearchField(selectAll: true)
+    }
+
+    /// 收起查找栏；保留查询与选项，方便下次打开或 ⌘G 继续导航。
+    func closeFindBar() {
+        guard findBarVisible else { return }
+        findBarVisible = false
+        findBar.isHidden = true
+        findBarHeightConstraint.constant = 0
+        findMatches = []
+        currentMatchIndex = nil
+        textView.findHighlightRanges = []
+        findBar.updateResult(current: nil, total: 0)
+        view.layoutSubtreeIfNeeded()
+        syncViewport()
+        focusEditorNow()
+    }
+
+    func findNext() {
+        moveToMatch(backward: false)
+    }
+
+    func findPrevious() {
+        moveToMatch(backward: true)
     }
 
     /// 把当前查找结果全部变成选区（多光标），随后可直接编辑。
     func selectAllFindMatches() {
-        // 先让编辑器获得焦点。若在查找器写入全部选区后再改第一响应者，
-        // NSTextFinder 会把选区压回当前匹配（实测只剩最后一个匹配）。
-        focusEditorNow()
-        textFinder.performAction(.selectAll)
+        guard findBarVisible else { return }
+        // 先把匹配刷新到最新，避免按钮状态与文本不一致。
+        search(selectFirst: false)
+        guard !findMatches.isEmpty else {
+            NSSound.beep()
+            return
+        }
+        textView.setSelections(findMatches.map { TextSelection(range: $0) })
         // 选区已表达全部匹配，不再叠加黄色高亮。
-        quickMatchRanges = []
-        finderMatchRanges = textFinder.incrementalMatchRanges.map(\.rangeValue)
-        applyFindHighlights()
-    }
-
-    private var effectiveFindMatchRanges: [NSRange] {
-        finderMatchRanges.isEmpty ? quickMatchRanges : finderMatchRanges
-    }
-
-    private func updateFinderMatchRanges(_ ranges: [NSRange]) {
-        finderMatchRanges = ranges
-        applyFindHighlights()
-    }
-
-    private func updateQuickMatches(for needle: String) {
-        lastFindString = needle
-        quickMatchRanges = FindMatchScanner.ranges(of: needle, in: engine.text)
-        applyFindHighlights()
-    }
-
-    /// 编辑文本后本地重新扫描；查找器的全量结果稍后到达时会覆盖本地结果。
-    private func refreshQuickMatchesAfterTextChange() {
-        guard scrollView.isFindBarVisible, !lastFindString.isEmpty else { return }
-        finderMatchRanges = []
-        quickMatchRanges = FindMatchScanner.ranges(
-            of: lastFindString,
-            in: engine.text
-        )
-        applyFindHighlights()
-    }
-
-    private func applyFindHighlights() {
-        guard scrollView.isFindBarVisible else {
-            textView.findHighlightRanges = []
-            return
-        }
-        textView.findHighlightRanges = effectiveFindMatchRanges
-    }
-
-    private func clearFindHighlights() {
-        finderMatchRanges = []
-        quickMatchRanges = []
         textView.findHighlightRanges = []
+        currentMatchIndex = nil
+        findBar.updateResult(current: nil, total: findMatches.count)
+        focusEditorNow()
     }
 
-    /// 找到查找栏搜索框并监听文本变化；查找栏由 NSTextFinder 延迟创建，需重试一次。
-    private func observeFindFieldIfNeeded() {
-        if let field = findSearchField() {
-            attachFindFieldObserver(field)
-            updateQuickMatches(for: field.stringValue)
+    /// 替换当前匹配；替换后自动选中下一处，便于连续操作。
+    func replaceCurrentMatch(with replacement: String) {
+        guard findBarVisible, !findMatches.isEmpty else { return }
+
+        let index: Int
+        if let currentMatchIndex, findMatches.indices.contains(currentMatchIndex) {
+            index = currentMatchIndex
+        } else if let selection = engine.selections.last?.range,
+                  let exact = findMatches.firstIndex(of: selection) {
+            index = exact
+        } else {
+            index = 0
+        }
+        let range = findMatches[index]
+        guard range.location + range.length <= engine.length else { return }
+
+        engine.replace(range: range, with: replacement, origin: .programmatic)
+        // 编辑回调已重新扫描；从替换文本末尾继续找下一处。
+        let threshold = range.location + (replacement as NSString).length
+        if !findMatches.isEmpty,
+           let next = findMatches.firstIndex(where: { $0.location >= threshold }) {
+            selectMatch(at: next, reveal: true)
+        } else {
+            currentMatchIndex = nil
+            textView.setSelections([.caret(at: min(threshold, engine.length))])
+            findBar.updateResult(current: nil, total: findMatches.count)
+        }
+    }
+
+    /// 一次事务替换全部匹配，并保持替换前的滚动位置。
+    func replaceAllMatches(with replacement: String) {
+        guard findBarVisible, !findMatches.isEmpty else { return }
+
+        let origin = currentScrollOrigin
+        let edits = findMatches.map {
+            TextEdit(range: $0, replacement: replacement)
+        }
+        let first = findMatches[0]
+        let caret = first.location + (replacement as NSString).length
+        engine.apply(
+            edits: edits,
+            selectionAfter: [.caret(at: caret)],
+            origin: .programmatic
+        )
+
+        // 编辑后视图会把主光标滚入可见区域；恢复用户原来的位置，
+        // 避免 Replace All 后跳到文档开头。行号栏强制刷新，防止残留空白。
+        restoreScrollOrigin(origin)
+        textView.lineNumberRuler?.refresh()
+        scrollView.contentView.needsDisplay = true
+
+        // 替换文本可能仍匹配查询（例如大小写不同），按新文本重新计数。
+        search(selectFirst: false)
+    }
+
+    private var scannerOptions: FindMatchOptions {
+        FindMatchOptions(
+            matchCase: findOptions.matchCase,
+            wholeWord: findOptions.wholeWord
+        )
+    }
+
+    /// 按搜索框当前内容重算匹配。`selectMatch` 为 true 时选中锚点之后的第一处。
+    private func search(selectFirst: Bool) {
+        guard findBarVisible else { return }
+        lastFindQuery = findBar.query
+        guard !lastFindQuery.isEmpty else {
+            findMatches = []
+            currentMatchIndex = nil
+            textView.findHighlightRanges = []
+            findBar.updateResult(current: nil, total: 0)
             return
         }
-        DispatchQueue.main.async { [weak self] in
-            guard let self, let field = self.findSearchField() else { return }
-            self.attachFindFieldObserver(field)
-            self.updateQuickMatches(for: field.stringValue)
+
+        findMatches = FindMatchScanner.ranges(
+            of: lastFindQuery,
+            in: engine.text,
+            options: scannerOptions
+        )
+        textView.findHighlightRanges = findMatches
+
+        guard !findMatches.isEmpty else {
+            currentMatchIndex = nil
+            findBar.updateResult(current: nil, total: 0)
+            return
+        }
+
+        if selectFirst {
+            let anchor = engine.selections.last?.range.location ?? 0
+            let index = findMatches.firstIndex { $0.location >= anchor } ?? 0
+            selectMatch(at: index, reveal: true)
+        } else if let selection = engine.selections.last?.range,
+                  selection.length > 0,
+                  let exact = findMatches.firstIndex(of: selection) {
+            currentMatchIndex = exact
+            findBar.updateResult(current: exact + 1, total: findMatches.count)
+        } else {
+            currentMatchIndex = nil
+            findBar.updateResult(current: nil, total: findMatches.count)
         }
     }
 
-    private func findSearchField() -> NSSearchField? {
-        func descendants(of view: NSView) -> [NSView] {
-            view.subviews.flatMap { [$0] + descendants(of: $0) }
+    private func selectMatch(at index: Int, reveal: Bool) {
+        guard findMatches.indices.contains(index) else { return }
+        currentMatchIndex = index
+        let range = findMatches[index]
+        textView.setSelections([TextSelection(range: range)])
+        if reveal {
+            textView.scrollRangeToVisible(range)
         }
-        return descendants(of: scrollView).first { $0 is NSSearchField } as? NSSearchField
+        findBar.updateResult(current: index + 1, total: findMatches.count)
     }
 
-    private func attachFindFieldObserver(_ field: NSSearchField) {
-        guard observedFindField !== field else { return }
-        if let findFieldObserver {
-            NotificationCenter.default.removeObserver(findFieldObserver)
+    /// ⌘G/⇧⌘G。查找栏收起时按上次查询导航，不重新打开查找栏。
+    private func moveToMatch(backward: Bool) {
+        let matches: [NSRange]
+        if findBarVisible {
+            matches = findMatches
+        } else if !lastFindQuery.isEmpty {
+            matches = FindMatchScanner.ranges(
+                of: lastFindQuery,
+                in: engine.text,
+                options: scannerOptions
+            )
+        } else {
+            showFindBar(replacing: false)
+            return
         }
-        observedFindField = field
-        findFieldObserver = NotificationCenter.default.addObserver(
-            forName: NSControl.textDidChangeNotification,
-            object: field,
-            queue: .main
-        ) { [weak self] notification in
-            guard let self,
-                  let field = notification.object as? NSSearchField
-            else {
-                return
-            }
-            self.updateQuickMatches(for: field.stringValue)
+        guard !matches.isEmpty else {
+            NSSound.beep()
+            return
+        }
+
+        let selection = engine.selections.last?.range
+            ?? NSRange(location: 0, length: 0)
+        let target: Int
+        if backward {
+            target = matches.lastIndex { $0.location < selection.location }
+                ?? matches.count - 1
+        } else {
+            // 当前匹配已选中时从它之后开始，否则从插入点开始。
+            let threshold = selection.length > 0
+                ? selection.location + 1
+                : selection.location
+            target = matches.firstIndex { $0.location >= threshold } ?? 0
+        }
+
+        let range = matches[target]
+        textView.setSelections([TextSelection(range: range)])
+        textView.scrollRangeToVisible(range)
+        if findBarVisible {
+            findMatches = matches
+            currentMatchIndex = target
+            findBar.updateResult(current: target + 1, total: matches.count)
         }
     }
 
-    deinit {
-        if let findFieldObserver {
-            NotificationCenter.default.removeObserver(findFieldObserver)
-        }
+    /// 编辑文本后刷新高亮与计数，但不移动光标（用户可能正在普通编辑）。
+    private func refreshFindMatchesAfterTextChange() {
+        guard findBarVisible else { return }
+        search(selectFirst: false)
+    }
+
+    /// 把滚动位置恢复到 `origin`，并夹取到当前文档范围内。
+    private func restoreScrollOrigin(_ origin: CGPoint) {
+        syncViewport()
+        let clipView = scrollView.contentView
+        let visibleSize = clipView.bounds.size
+        let contentSize = textView.frame.size
+        let target = CGPoint(
+            x: min(max(0, origin.x), max(0, contentSize.width - visibleSize.width)),
+            y: min(max(0, origin.y), max(0, contentSize.height - visibleSize.height))
+        )
+        clipView.scroll(to: target)
+        scrollView.reflectScrolledClipView(clipView)
     }
 
     // MARK: - 多光标

@@ -483,19 +483,19 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
 
     @objc func showFindInterface(_ sender: Any?) {
-        performFindAction(.showFindInterface)
+        session.selectedTab?.editor.showFindBar(replacing: false)
     }
 
     @objc func showReplaceInterface(_ sender: Any?) {
-        performFindAction(.showReplaceInterface)
+        session.selectedTab?.editor.showFindBar(replacing: true)
     }
 
     @objc func findNextMatch(_ sender: Any?) {
-        performFindAction(.nextMatch)
+        session.selectedTab?.editor.findNext()
     }
 
     @objc func findPreviousMatch(_ sender: Any?) {
-        performFindAction(.previousMatch)
+        session.selectedTab?.editor.findPrevious()
     }
 
     @objc func selectAllFindMatches(_ sender: Any?) {
@@ -515,10 +515,6 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     @objc func addCursorsToSelectedLines(_ sender: Any?) {
         guard let tab = session.selectedTab else { return }
         handleMultiCursorResult(tab.editor.addCursorsToSelectedLines())
-    }
-
-    private func performFindAction(_ action: NSTextFinder.Action) {
-        session.selectedTab?.editor.performFindAction(action)
     }
 
     private func handleMultiCursorResult(_ result: MultiCursorResult) {
