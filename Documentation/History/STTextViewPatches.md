@@ -1,6 +1,10 @@
-# Linea 对 STTextView 的本地补丁
+# STTextView 本地补丁归档（已停用）
 
-本目录是 [STTextView](https://github.com/krzyzanowskim/STTextView) **2.4.1**（commit `bbdcfd9d413ad3055dafd23a223be9bd39742f89`）的 vendored 副本，仅用于修复 Linea 多光标编辑的性能热点。上游许可证见 [LICENSE.md](LICENSE.md)，Linea 继续以 GPL-3.0 分发。
+> **状态：历史归档。** Linea 1.1.0 起编辑与布局由自建的 `LineaCore` / `LineaTextUI` 承担，
+> `Vendor/STTextView` 及 STTextKitPlus 依赖已全部删除。本文档保留补丁与依赖版本信息，
+> 仅供对照旧实现（1.0.2 及更早）和查阅历史性能数据。
+
+原 `Vendor/STTextView` 是 [STTextView](https://github.com/krzyzanowskim/STTextView) **2.4.1**（commit `bbdcfd9d413ad3055dafd23a223be9bd39742f89`）的 vendored 副本，仅用于修复 Linea 多光标编辑的性能热点。该副本已随架构重写删除；上游许可证为 GPLv3（提供商业授权），可从上游仓库获取。
 
 示例工程 `TextEdit`、`TextEdit.SwiftUI` 和 `.github` 已从副本中移除，`Sources/`、`Tests/`、`Package.swift` 及上游许可证保持原样。
 

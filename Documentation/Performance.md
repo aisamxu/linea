@@ -5,7 +5,7 @@
 ## 测量条件
 
 - 机器：Apple M2，24 GB，macOS 15.5（Darwin 24.5.0）
-- 构建：Release（`swift build -c release`），基准宿主为临时 SPM 工程，直接复用 `Sources/Linea` 与 vendored STTextView
+- 构建：Release（`swift build -c release`），基准宿主为临时 SPM 工程，直接复用 `Sources/Linea` 与当时的 vendored STTextView（已删除，补丁说明见 [History/STTextViewPatches.md](History/STTextViewPatches.md)）
 - 窗口：900×600，字体 13pt 等宽系统字体，行高 1.2，tab 间隔 28pt
 - 计时范围：输入事件入口到 `layoutSubtreeIfNeeded()` 完成，包含布局与绘制准备，不含屏幕合成
 - 场景：每行一个零宽光标，`insertText` + 选区同步 + 布局
