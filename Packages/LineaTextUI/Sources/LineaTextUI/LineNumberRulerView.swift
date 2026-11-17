@@ -55,6 +55,11 @@ public final class LineNumberRulerView: NSRulerView {
         )
         if abs(ruleThickness - desired) > 0.5 {
             ruleThickness = desired
+            // 行号宽度变化会改变实际可视宽度；窗口内实时重算视口，
+            // 避免文档仍按旧宽度排版而多出滚动条。
+            if textView.window != nil {
+                textView.syncViewportWidthFromScrollView()
+            }
         }
         needsDisplay = true
     }

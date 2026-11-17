@@ -204,10 +204,10 @@
 | 输入法 | I1、I2、I5、I6（marked text、主选区组合、提交边界、组合中 Esc/⌘Z） | `LineaTextViewInputMethodTests.swift`（15 个） |
 | 无障碍 | X1、X3（属性读取与通知） | `LineaTextViewAccessibilityTests.swift`（8 个） |
 | 布局几何 | 行高、命中测试、可见行、长行分块、行号宽度 | `CoreTextLayoutEngineTests`、`LongLineLayoutTests`、`TextGeometryTests` |
-| 字号缩放 | 10–24pt 夹取、偏好持久化、布局重建、顶部行不跳变、纯颜色切换不丢缓存 | `LineaTextViewTests`、`EditorFontZoomTests` |
-| App 集成 | 初始加载、越界 clamp、两次输入两步撤销、冻结、重载清历史、视口尾部、500 光标结构护栏 | `Tests/LineaTests`（已改写，待 CI 首次运行） |
+| 字号缩放 | 10–24pt 夹取、偏好持久化、布局重建、顶部行不跳变、横向保持左边缘文本列、纯颜色切换不丢缓存 | `LineaTextViewTests`、`EditorFontZoomTests` |
+| App 集成 | 初始加载、越界 clamp、两次输入两步撤销、冻结、重载清历史、视口尾部、空文档无横向滚动条、500 光标结构护栏 | `Tests/LineaTests`（已改写，待 CI 首次运行） |
 
-总计：LineaCore 125 个、LineaTextUI 136 个、App XCTest 61 个（核心/数据 28 + 窗口几何 7 + 焦点 1 + 集成 12 + 视口 5 + 性能护栏 5 + 字号缩放 3）。
+总计：LineaCore 125 个、LineaTextUI 136 个、App XCTest 63 个（核心/数据 28 + 窗口几何 7 + 焦点 1 + 集成 12 + 视口 7 + 性能护栏 5 + 字号缩放 3）。
 LineaCore/LineaTextUI 已在本机全部通过；App XCTest 因本机只有 CommandLineTools、没有 Xcode，
 无法本地执行，由 `.github/workflows/test-ci.yml` 在 macOS runner 上运行。
 

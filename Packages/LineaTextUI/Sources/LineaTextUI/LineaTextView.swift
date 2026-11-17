@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import CoreText
 import Foundation
 import LineaCore
 
@@ -24,7 +25,11 @@ public final class LineaTextView:
         didSet {
             renderer.theme = theme
             if Self.metricsDiffer(theme, oldValue) {
-                rebuildLayoutEngine()
+                // 等宽字体的字符宽随字号近似线性变化，横向滚动偏移按同一比例换算，
+                // 缩放时左边缘停留的文本列才不会漂移。
+                let oldSize = max(1, CTFontGetSize(oldValue.font))
+                let newSize = CTFontGetSize(theme.font)
+                rebuildLayoutEngine(fontScale: newSize / oldSize)
             } else {
                 lineNumberRuler?.refresh()
                 needsDisplay = true
@@ -95,6 +100,8 @@ public final class LineaTextView:
 
     private var renderer: TextRenderer
     private var clipObservation: NSObjectProtocol?
+    /// 绘制期间测到更长行时，延迟到下一轮事件循环扩大文档 frame。
+    private var isDocumentFrameGrowthScheduled = false
     /// 上一次通知 AX 的可见首行，滚动时只在跨行时发 layoutChanged。
     private var lastAccessibilityVisibleLine = -1
     private var previousOnChange: ((EditorChange) -> Void)?
@@ -204,14 +211,23 @@ public final class LineaTextView:
         theme = newTheme
     }
 
-    private func rebuildLayoutEngine() {
+    private func rebuildLayoutEngine(fontScale: CGFloat) {
         let oldEngine = layoutEngine
         let clipView = enclosingScrollView?.contentView
-        // 以顶部可见行作为锚点：行高变化后仍停留在同一行，而不是跳到别处。
-        let topLine = oldEngine.lineNumber(
-            atY: max(0, clipView?.bounds.minY ?? 0)
-        )
-        let oldOriginX = clipView?.bounds.minX ?? 0
+        // 以顶部可见行及其行内比例作为锚点：行高变化后仍停留在同一位置，
+        // 而不是吸到行首或跳到别处。
+        let oldY = max(0, clipView?.bounds.minY ?? 0)
+        let topLine = oldEngine.lineNumber(atY: oldY)
+        let topLineFraction: CGFloat
+        if oldEngine.lineHeight > 0 {
+            let offsetInLine = oldY - oldEngine.y(forLine: topLine)
+            topLineFraction = max(0, min(1, offsetInLine / oldEngine.lineHeight))
+        } else {
+            topLineFraction = 0
+        }
+        // 横向偏移是内容坐标（不含行号 ruler 覆盖区），按字号比例缩放后
+        // 左边缘停留的文本列保持不变。
+        let oldOffsetX = horizontalScrollOffset
         let viewportWidth = oldEngine.viewportWidth
 
         let newEngine = CoreTextLayoutEngine(
@@ -221,24 +237,33 @@ public final class LineaTextView:
             lineHeightMultiple: theme.lineHeightMultiple
         )
         newEngine.viewportWidth = viewportWidth
+        // 新引擎尚未排版任何行，先按字号比例继承旧的最大行宽，
+        // 否则文档宽会先缩回视口，横向偏移被错误夹取。
+        if fontScale.isFinite, fontScale > 0 {
+            newEngine.carryOverMeasuredMaxWidth(oldEngine.measuredMaxWidth * fontScale)
+        }
         layoutEngine = newEngine
         displayedVersion = engine.version
         verticalAnchorXs = nil
         extendAnchors = nil
         updateDocumentFrame()
 
+        // 行号字号变化会改变 ruler 宽度，先刷新再据此换算横向原点。
+        lineNumberRuler?.refresh()
+
         if let clipView, let scrollView = enclosingScrollView {
-            let maxX = max(0, frame.width - clipView.bounds.width)
             let maxY = max(0, frame.height - clipView.bounds.height)
-            let origin = CGPoint(
-                x: min(max(0, oldOriginX), maxX),
-                y: min(max(0, newEngine.y(forLine: topLine)), maxY)
+            let maxX = max(0, frame.width - layoutEngine.viewportWidth)
+            let targetX = min(max(0, oldOffsetX * fontScale), maxX)
+            let targetY = min(
+                max(0, newEngine.y(forLine: topLine) + topLineFraction * newEngine.lineHeight),
+                maxY
             )
+            let origin = CGPoint(x: targetX - rulerOverlapWidth, y: targetY)
             clipView.scroll(to: origin)
             scrollView.reflectScrolledClipView(clipView)
         }
 
-        lineNumberRuler?.refresh()
         inputContext?.invalidateCharacterCoordinates()
         NSAccessibility.post(element: self, notification: .layoutChanged)
         needsDisplay = true
@@ -255,12 +280,78 @@ public final class LineaTextView:
 
     /// 把文档尺寸同步到 frame；滚动视图据此决定滚动条范围。
     public func updateDocumentFrame() {
+        // 行宽只能通过排版获得；窗口内先测量可见行，避免长行文档在下一帧
+        // 绘制前把宽度缩回视口，导致横向滚动范围丢失。
+        // 无窗口时保持懒排版，避免离屏测试/构造阶段产生额外 CTLine。
+        if window != nil, let scrollView = enclosingScrollView {
+            layoutEngine.measureLines(in: scrollView.documentVisibleRect)
+        }
         let newSize = NSSize(
             width: max(layoutEngine.documentWidth, layoutEngine.viewportWidth),
             height: max(layoutEngine.documentHeight, 1)
         )
         guard frame.size != newSize else { return }
         setFrameSize(newSize)
+    }
+
+    /// 绘制期间才测到的更长行会在下一轮事件循环扩大文档 frame。
+    ///
+    /// 不允许在 `draw` 中直接改 frame，否则会触发滚动视图重新布局并重入绘制。
+    private func scheduleDocumentFrameGrowthIfNeeded() {
+        guard !isDocumentFrameGrowthScheduled,
+              frame.width + 0.5 < layoutEngine.documentWidth
+                  || frame.height + 0.5 < layoutEngine.documentHeight
+        else {
+            return
+        }
+        isDocumentFrameGrowthScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.isDocumentFrameGrowthScheduled = false
+            self.updateDocumentFrame()
+        }
+    }
+
+    /// 行号 ruler 与 clip view 在水平方向的重叠宽度。
+    ///
+    /// AppKit 把 vertical ruler 作为滚动视图的子视图覆盖在内容左侧，clip view
+    /// 仍占满整条宽度。计算可视宽度和横向滚动原点时必须扣掉这段重叠，
+    /// 否则文档会被判定为“比可视区宽”，空文档也会出现横向滚动条。
+    private var rulerOverlapWidth: CGFloat {
+        guard let scrollView = enclosingScrollView,
+              scrollView.rulersVisible,
+              let ruler = scrollView.verticalRulerView
+        else {
+            return 0
+        }
+        let clipView = scrollView.contentView
+        // clip view 已经让出 ruler 宽度时不重叠；由 clip 的实际位置判断，
+        // 避免依赖 ruler.frame 是否已完成布局。
+        let clipOffset = max(0, clipView.frame.minX - ruler.frame.minX)
+        return max(0, ruler.ruleThickness - clipOffset)
+    }
+
+    /// 当前横向滚动偏移，单位是内容坐标；0 表示文档左边缘紧贴行号右侧。
+    ///
+    /// 会话快照和恢复都使用这个值，而不是 clip view 的原始 bounds 原点：
+    /// 后者在 ruler 覆盖模式下会包含 `-rulerThickness` 的视觉偏移。
+    public var horizontalScrollOffset: CGFloat {
+        guard let clipView = enclosingScrollView?.contentView else { return 0 }
+        return max(0, clipView.bounds.minX + rulerOverlapWidth)
+    }
+
+    /// 应用滚动原点（内容坐标），并夹取到当前文档范围。
+    public func applyScrollOrigin(_ origin: CGPoint) {
+        guard let scrollView = enclosingScrollView else { return }
+        let clipView = scrollView.contentView
+        let maxX = max(0, frame.width - layoutEngine.viewportWidth)
+        let maxY = max(0, frame.height - clipView.bounds.height)
+        let target = CGPoint(
+            x: min(max(0, origin.x), maxX) - rulerOverlapWidth,
+            y: min(max(0, origin.y), maxY)
+        )
+        clipView.scroll(to: target)
+        scrollView.reflectScrolledClipView(clipView)
     }
 
     public func scrollRangeToVisible(_ range: NSRange) {
@@ -320,6 +411,7 @@ public final class LineaTextView:
             )
             drawDropIndicator(in: context, dirtyRect: dirtyRect)
         }
+        scheduleDocumentFrameGrowthIfNeeded()
     }
 
     /// 拖拽悬停时在落点画一条竖向指示线。
@@ -1041,10 +1133,12 @@ public final class LineaTextView:
             return
         }
 
-        let maxX = max(0, frame.width - visible.width)
+        // 横向按内容坐标计算，避免把行号覆盖区误当成可滚动内容。
+        let maxX = max(0, frame.width - layoutEngine.viewportWidth)
+        let offsetX = min(max(0, horizontalScrollOffset + delta.x), maxX)
         let maxY = max(0, frame.height - visible.height)
         var origin = visible.origin
-        origin.x = min(max(0, origin.x + delta.x), maxX)
+        origin.x = offsetX - rulerOverlapWidth
         origin.y = min(max(0, origin.y + delta.y), maxY)
         guard origin != visible.origin else { return }
 
@@ -1320,10 +1414,12 @@ public final class LineaTextView:
             return
         }
 
-        let maxX = max(0, frame.width - visible.width)
+        // 横向按内容坐标计算，避免把行号覆盖区误当成可滚动内容。
+        let maxX = max(0, frame.width - layoutEngine.viewportWidth)
+        let offsetX = min(max(0, horizontalScrollOffset + delta.x), maxX)
         let maxY = max(0, frame.height - visible.height)
         var origin = visible.origin
-        origin.x = min(max(0, origin.x + delta.x), maxX)
+        origin.x = offsetX - rulerOverlapWidth
         origin.y = min(max(0, origin.y + delta.y), maxY)
         guard origin != visible.origin else { return }
 
@@ -2194,8 +2290,13 @@ public final class LineaTextView:
         NSAccessibility.post(element: self, notification: .layoutChanged)
     }
 
-    private func syncViewportWidth() {
+    /// 滚动视图/ruler 布局变化后重新计算可视宽度。
+    public func syncViewportWidthFromScrollView() {
         guard let clipView = enclosingScrollView?.contentView else { return }
-        setViewportWidth(clipView.bounds.width)
+        setViewportWidth(max(0, clipView.bounds.width - rulerOverlapWidth))
+    }
+
+    private func syncViewportWidth() {
+        syncViewportWidthFromScrollView()
     }
 }

@@ -40,7 +40,8 @@ public final class CoreTextLayoutEngine: TextLayoutEngine {
     /// 等宽字体单字符 advance，用于超长行宽度估算。
     private let baseAdvance: CGFloat
     private var lineCache: [Int: TextLine] = [:]
-    private var measuredMaxWidth: CGFloat = 0
+    /// 已排版过的最大行宽。字号重建时按比例继承，避免横向滚动范围首帧缩回视口。
+    public private(set) var measuredMaxWidth: CGFloat = 0
 
     /// 布局/缓存统计，供性能测试使用。
     public private(set) var layoutCount = 0
@@ -319,6 +320,24 @@ public final class CoreTextLayoutEngine: TextLayoutEngine {
     public func invalidateLayout() {
         lineCache.removeAll(keepingCapacity: true)
         measuredMaxWidth = 0
+    }
+
+    /// 预先排版指定矩形覆盖的行，用于在决定文档宽之前填充行宽缓存。
+    public func measureLines(in rect: CGRect) {
+        guard rect.width > 0, rect.height > 0 else { return }
+        for line in lines(in: rect) {
+            _ = layoutLine(number: line)
+        }
+    }
+
+    /// 重建布局引擎时继承旧引擎的已测最大行宽。
+    ///
+    /// 新引擎还没排版任何行，若直接按视口宽决定文档宽，横向滚动范围会在
+    /// 字号切换的首帧缩回视口，导致滚动位置被错误夹取。等宽字体下最大行宽
+    /// 与字号近似同比例，因此由调用方按字号比例传入。
+    public func carryOverMeasuredMaxWidth(_ width: CGFloat) {
+        guard width.isFinite, width > 0 else { return }
+        measuredMaxWidth = max(measuredMaxWidth, width)
     }
 
     // MARK: - 偏移与 x 互转
