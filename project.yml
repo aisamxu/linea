@@ -38,7 +38,7 @@ targets:
         PRODUCT_NAME: Linea
         PRODUCT_BUNDLE_IDENTIFIER: com.samxu.Linea
         MARKETING_VERSION: "1.1.0"
-        CURRENT_PROJECT_VERSION: "4"
+        CURRENT_PROJECT_VERSION: "5"
         INFOPLIST_FILE: Resources/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ENABLE_HARDENED_RUNTIME: NO
