@@ -115,6 +115,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
     }
 
+    /// ⌘T：优先在当前窗口新建标签；没有窗口时新建窗口（窗口内自带空白标签）。
+    @objc func newTabAction(_ sender: Any?) {
+        newDocumentAction(sender)
+    }
+
     @objc func newWindowAction(_ sender: Any?) {
         guard !isTestMode, !isTerminationInProgress else { return }
         windowManager.newWindow()
@@ -143,6 +148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
         case #selector(newDocumentAction(_:)),
+             #selector(newTabAction(_:)),
              #selector(newWindowAction(_:)),
              #selector(openDocument(_:)):
             return !isTestMode && !isTerminationInProgress
@@ -162,6 +168,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             return .terminateLater
         }
 
+        // 顺序必须是「提交输入法组合 → 收集会话 → 冻结」，
+        // 否则会话快照可能缺少最后一次组合提交。
+        windowManager.commitPendingInput()
         let collected = windowManager.collectSession()
 
         // 没有窗口/标签时不写会话，并确保旧快照不会在下次启动重放。

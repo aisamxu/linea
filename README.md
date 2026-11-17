@@ -2,7 +2,7 @@
 
 ![Linea 图标](Resources/Assets.xcassets/AppIcon.appiconset/icon_256x256.png)
 
-Linea 是一个轻量、原生、多光标的 macOS 纯文本编辑器。窗口、菜单和标签栏使用 AppKit / SwiftUI 搭建，文本编辑基于 [STTextView](https://github.com/krzyzanowskim/STTextView) 2.4.1；项目内 vendored 了该版本并附带多光标性能补丁，说明见 [Vendor/STTextView/LINEA_PATCHES.md](Vendor/STTextView/LINEA_PATCHES.md)。
+Linea 是一个轻量、原生、多光标的 macOS 纯文本编辑器。窗口、菜单和标签栏使用 AppKit / SwiftUI 搭建，编辑与布局由项目自建的 [LineaCore](Packages/LineaCore) 和 [LineaTextUI](Packages/LineaTextUI) 承担：前者是基于 piece tree 的文本内核（文本、行索引、选区、事务、撤销、多光标），后者基于 CoreText 做视口虚拟化布局与直接绘制，不依赖 TextKit / STTextView。
 
 - 只支持 Apple 芯片（arm64），最低 macOS 14。
 - 只处理 UTF-8 纯文本，不换行、横向滚动，跟随系统浅色/深色外观。
@@ -70,7 +70,7 @@ Linea 是一个轻量、原生、多光标的 macOS 纯文本编辑器。窗口�
 
 要求：macOS 14+、Apple 芯片、Xcode 26、[XcodeGen](https://github.com/yonaskolb/XcodeGen)。
 
-STTextView 2.4.1 已放在 `Vendor/STTextView`，`xcodegen generate` 会直接使用本地包；无需额外拉取该依赖。补丁不改变公开接口，升级方式见 [Vendor/STTextView/LINEA_PATCHES.md](Vendor/STTextView/LINEA_PATCHES.md)。
+编辑内核与布局层是两个本地 Swift Package（`Packages/LineaCore`、`Packages/LineaTextUI`），`xcodegen generate` 会直接引用，无需额外拉取依赖。旧版 STTextView vendored 副本与其补丁说明已归档到 [Documentation/History/STTextViewPatches.md](Documentation/History/STTextViewPatches.md)。
 
 ```bash
 brew install xcodegen
@@ -91,6 +91,10 @@ xcodebuild test \
   -project Linea.xcodeproj \
   -scheme Linea \
   -destination 'platform=macOS,arch=arm64'
+
+# 也可以不生成工程，直接跑两个本地包的测试
+swift test --package-path Packages/LineaCore
+swift test --package-path Packages/LineaTextUI
 ```
 
 仓库不提交生成的 `Linea.xcodeproj`。CI 在 `macos-15`（arm64）上动态选择最新的 Xcode 26，生成工程、运行 XCTest、构建 Release arm64 `.app`、为完整 `.app` 做 ad-hoc 签名并验证签名、校验架构/版本与最低系统版本，然后生成包含 `/Applications` 符号链接的 DMG、挂载复验并输出 `.sha256`。CI 只在推送 `v*` 版本 tag 时运行。
@@ -130,8 +134,8 @@ shasum -a 256 -c Linea-1.0.2-macos-arm64.dmg.sha256
 - 首版只支持 UTF-8；打开不是合法 UTF-8 的文件会报错。
 - 不包含语法高亮、文件树、插件、项目工作区、自动换行或主题切换。
 - 不恢复全屏、最小化状态；只恢复普通窗口 frame 和会话内容。
-- 内置行号 gutter 在极大文档滚动时的性能取决于 STTextView；10 万行加载已纳入自动化测试。
-- 中文输入法在单光标下使用 STTextView 原生实现；多光标组合输入依赖 TextKit 行为，仍需实机验证，若出现异常可先按 Esc 折叠为单光标输入。
+- 行号 gutter、视口布局与绘制由自建引擎完成，固定行高、无自动换行；10 万行加载、多光标与长行行为已纳入自动化测试，发布前另行做人工性能验收。
+- 多光标组合输入只在主选区显示 marked text，其余光标在提交时随文本平移；与 1.0.2 行为一致。
 - 崩溃、系统强制结束进程或断电不属于会话恢复保证范围。
 - 仅使用免费 ad-hoc 签名，未使用 Developer ID 签名和 Apple 公证；首次打开仍需确认，不支持自动更新；不使用自签名证书（无法绕过 Gatekeeper）。
 
@@ -156,4 +160,4 @@ shasum -a 256 -c Linea-1.0.2-macos-arm64.dmg.sha256
 
 ## 许可证
 
-Linea 以 **GPL-3.0** 发布，完整文本见 [LICENSE](LICENSE)。STTextView 同样采用 GPLv3（并提供商业授权），因此本项目的二进制分发需要同时提供对应源码。若需闭源分发，需要自行取得 STTextView 的商业授权。
+Linea 以 **GPL-3.0** 发布，完整文本见 [LICENSE](LICENSE)。项目不再包含第三方编辑器依赖，除系统框架外没有其他运行时许可证约束。

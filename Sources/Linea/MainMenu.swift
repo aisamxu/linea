@@ -1,5 +1,4 @@
 import AppKit
-import STTextView
 
 /// 纯代码构建英文主菜单。文档/编辑/查找/多光标动作通过 responder chain
 /// 交给当前 EditorWindowController 处理。
@@ -84,6 +83,11 @@ enum MainMenu {
             "n"
         ))
         menu.addItem(item(
+            "New Tab",
+            #selector(AppDelegate.newTabAction(_:)),
+            "t"
+        ))
+        menu.addItem(item(
             "New Window",
             #selector(AppDelegate.newWindowAction(_:)),
             "n",
@@ -136,8 +140,8 @@ enum MainMenu {
 
         menu.addItem(item("Cut", #selector(NSText.cut(_:)), "x"))
         menu.addItem(item("Copy", #selector(NSText.copy(_:)), "c"))
-        // 纯文本编辑器：⌘V 始终按纯文本粘贴，避免带入 RTF 字体和颜色。
-        menu.addItem(item("Paste", #selector(STTextView.pasteAsPlainText(_:)), "v"))
+        // 纯文本编辑器：LineaTextView.paste 只读 .string，不会带入 RTF 字体和颜色。
+        menu.addItem(item("Paste", #selector(NSText.paste(_:)), "v"))
         menu.addItem(item("Delete", #selector(NSText.delete(_:))))
         menu.addItem(item("Select All", #selector(NSText.selectAll(_:)), "a"))
 
@@ -211,6 +215,23 @@ enum MainMenu {
             "Zoom",
             #selector(NSWindow.performZoom(_:))
         ))
+
+        menu.addItem(.separator())
+
+        // ⌘1…⌘9 按标签栏顺序切换；menuItem.tag 使用 1 起的标签编号。
+        let selectTabMenu = NSMenu(title: "Select Tab")
+        for number in 1...9 {
+            let selectItem = item(
+                "Tab \(number)",
+                #selector(EditorWindowController.selectTabAction(_:)),
+                String(number)
+            )
+            selectItem.tag = number
+            selectTabMenu.addItem(selectItem)
+        }
+        let selectTabItem = NSMenuItem(title: "Select Tab", action: nil, keyEquivalent: "")
+        selectTabItem.submenu = selectTabMenu
+        menu.addItem(selectTabItem)
 
         menu.addItem(.separator())
 

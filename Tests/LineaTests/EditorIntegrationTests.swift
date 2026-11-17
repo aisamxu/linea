@@ -1,8 +1,8 @@
 import AppKit
-import STTextView
 import XCTest
 @testable import Linea
 
+/// 编辑器集成测试：验证控制器把引擎、视图与文档脏状态正确串起来。
 @MainActor
 final class EditorIntegrationTests: XCTestCase {
     func testInitialLoadRestoresSelectionsWithoutMarkingDirty() {
@@ -16,7 +16,7 @@ final class EditorIntegrationTests: XCTestCase {
             ]
         )
 
-        XCTAssertEqual(editor.textView.text, "abc\ndef")
+        XCTAssertEqual(editor.currentText, "abc\ndef")
         XCTAssertEqual(
             editor.currentSelections(),
             [
@@ -25,6 +25,7 @@ final class EditorIntegrationTests: XCTestCase {
             ]
         )
         XCTAssertFalse(document.isDirty)
+        XCTAssertFalse(editor.engine.isDirty)
     }
 
     func testOutOfBoundsSelectionIsClamped() {
@@ -40,7 +41,7 @@ final class EditorIntegrationTests: XCTestCase {
         )
     }
 
-    func testInsertWritesAtEverySelectionAndUndoRestoresText() throws {
+    func testInsertWritesAtEverySelectionAndUndoRestoresText() {
         let document = makeDocument()
         let editor = EditorViewController(
             document: document,
@@ -52,17 +53,13 @@ final class EditorIntegrationTests: XCTestCase {
         )
 
         XCTAssertEqual(editor.currentSelections().count, 2)
-        let undo = try XCTUnwrap(editor.textView.undoManager)
 
-        // 测试里没有 run loop 自动事件分组，手动包一层模拟一次用户输入。
-        undo.beginUndoGrouping()
         editor.textView.insertText(
             "X",
             replacementRange: NSRange(location: NSNotFound, length: 0)
         )
-        undo.endUndoGrouping()
 
-        XCTAssertEqual(editor.textView.text, "X\nX")
+        XCTAssertEqual(editor.currentText, "X\nX")
         XCTAssertEqual(
             editor.currentSelections(),
             [
@@ -72,13 +69,11 @@ final class EditorIntegrationTests: XCTestCase {
         )
         XCTAssertTrue(document.isDirty)
 
-        undo.undo()
-        spinMainRunLoop()
-        XCTAssertEqual(editor.textView.text, "abc\ndef")
+        XCTAssertTrue(editor.engine.undo())
+        XCTAssertEqual(editor.currentText, "abc\ndef")
 
-        undo.redo()
-        spinMainRunLoop()
-        XCTAssertEqual(editor.textView.text, "X\nX")
+        XCTAssertTrue(editor.engine.redo())
+        XCTAssertEqual(editor.currentText, "X\nX")
         // 重做后光标必须落在两段恢复的文本之后，而不是因为撤销范围错位而重叠。
         XCTAssertEqual(
             editor.currentSelections(),
@@ -89,7 +84,7 @@ final class EditorIntegrationTests: XCTestCase {
         )
     }
 
-    func testTypingTwiceKeepsMultipleCarets() throws {
+    func testTypingTwiceKeepsMultipleCarets() {
         let document = makeDocument()
         let editor = EditorViewController(
             document: document,
@@ -99,13 +94,9 @@ final class EditorIntegrationTests: XCTestCase {
                 NSRange(location: 4, length: 3),
             ]
         )
-        let undo = try XCTUnwrap(editor.textView.undoManager)
-        // XCTest 在测试方法外维持自动事件撤销组，手动 begin/end 的两次输入会被合并。
-        // 测试中关闭按事件分组，显式验证每次输入各自成为一步撤销；真实 App 仍由事件分组。
-        undo.groupsByEvent = false
 
-        performInsertion("X", in: editor, undo: undo)
-        XCTAssertEqual(editor.textView.text, "X\nX")
+        performInsertion("X", in: editor)
+        XCTAssertEqual(editor.currentText, "X\nX")
         XCTAssertEqual(
             editor.currentSelections(),
             [
@@ -114,8 +105,8 @@ final class EditorIntegrationTests: XCTestCase {
             ]
         )
 
-        performInsertion("Y", in: editor, undo: undo)
-        XCTAssertEqual(editor.textView.text, "XY\nXY")
+        performInsertion("Y", in: editor)
+        XCTAssertEqual(editor.currentText, "XY\nXY")
         XCTAssertEqual(
             editor.currentSelections(),
             [
@@ -124,18 +115,16 @@ final class EditorIntegrationTests: XCTestCase {
             ]
         )
 
-        undo.undo()
-        spinMainRunLoop()
-        XCTAssertEqual(editor.textView.text, "X\nX")
+        XCTAssertTrue(editor.engine.undo())
+        XCTAssertEqual(editor.currentText, "X\nX")
         XCTAssertEqual(editor.currentSelections().count, 2)
 
-        undo.undo()
-        spinMainRunLoop()
-        XCTAssertEqual(editor.textView.text, "abc\ndef")
+        XCTAssertTrue(editor.engine.undo())
+        XCTAssertEqual(editor.currentText, "abc\ndef")
         XCTAssertEqual(editor.currentSelections().count, 2)
     }
 
-    func testSixtyCursorsKeepSelectionsAcrossConsecutiveInput() throws {
+    func testSixtyCursorsKeepSelectionsAcrossConsecutiveInput() {
         let lineCount = 60
         let lines = (1...lineCount).map { "Line \($0)" }
         let text = lines.joined(separator: "\n")
@@ -151,35 +140,31 @@ final class EditorIntegrationTests: XCTestCase {
             text: text,
             selections: selections
         )
-        let undo = try XCTUnwrap(editor.textView.undoManager)
-        undo.groupsByEvent = false
 
-        performInsertion("X", in: editor, undo: undo)
+        performInsertion("X", in: editor)
         XCTAssertEqual(editor.currentSelections().count, lineCount)
 
-        performInsertion("Y", in: editor, undo: undo)
+        performInsertion("Y", in: editor)
         XCTAssertEqual(editor.currentSelections().count, lineCount)
         XCTAssertEqual(
-            editor.textView.text?.components(separatedBy: "\n").count,
+            editor.currentText.components(separatedBy: "\n").count,
             lineCount
         )
 
-        // 两次输入各成一个撤销组，需要撤销两次才能回到初始文本。
-        undo.undo()
-        spinMainRunLoop()
+        // 两次输入各成一个撤销步，需要撤销两次才能回到初始文本。
+        XCTAssertTrue(editor.engine.undo())
         XCTAssertEqual(editor.currentSelections().count, lineCount)
         XCTAssertEqual(
-            editor.textView.text,
+            editor.currentText,
             lines.map { "X" + $0 }.joined(separator: "\n")
         )
 
-        undo.undo()
-        spinMainRunLoop()
-        XCTAssertEqual(editor.textView.text, text)
+        XCTAssertTrue(editor.engine.undo())
+        XCTAssertEqual(editor.currentText, text)
         XCTAssertEqual(editor.currentSelections().count, lineCount)
     }
 
-    func testBackspaceDeletesAtEveryCaretAndUndoRestores() throws {
+    func testBackspaceDeletesAtEveryCaretAndUndoRestores() {
         let editor = EditorViewController(
             document: makeDocument(),
             text: "abc\ndef",
@@ -188,14 +173,10 @@ final class EditorIntegrationTests: XCTestCase {
                 NSRange(location: 5, length: 0),
             ]
         )
-        let undo = try XCTUnwrap(editor.textView.undoManager)
 
-        undo.beginUndoGrouping()
         editor.textView.deleteBackward(nil)
-        undo.endUndoGrouping()
-        spinMainRunLoop()
 
-        XCTAssertEqual(editor.textView.text, "bc\nef")
+        XCTAssertEqual(editor.currentText, "bc\nef")
         XCTAssertEqual(
             editor.currentSelections(),
             [
@@ -204,48 +185,41 @@ final class EditorIntegrationTests: XCTestCase {
             ]
         )
 
-        undo.undo()
-        spinMainRunLoop()
-        XCTAssertEqual(editor.textView.text, "abc\ndef")
+        XCTAssertTrue(editor.engine.undo())
+        XCTAssertEqual(editor.currentText, "abc\ndef")
     }
 
-    func testSingleCaretInsertAndUndo() throws {
+    func testSingleCaretInsertAndUndo() {
         let editor = EditorViewController(
             document: makeDocument(),
             text: "abc",
             selections: [NSRange(location: 1, length: 0)]
         )
-        let undo = try XCTUnwrap(editor.textView.undoManager)
 
-        undo.beginUndoGrouping()
         editor.textView.insertText(
             "Z",
             replacementRange: NSRange(location: NSNotFound, length: 0)
         )
-        undo.endUndoGrouping()
 
-        XCTAssertEqual(editor.textView.text, "aZbc")
-        undo.undo()
-        XCTAssertEqual(editor.textView.text, "abc")
+        XCTAssertEqual(editor.currentText, "aZbc")
+        XCTAssertTrue(editor.engine.undo())
+        XCTAssertEqual(editor.currentText, "abc")
     }
 
-    func testReplaceTextFromDiskKeepsDocumentCleanAndClearsUndo() throws {
+    func testReplaceTextFromDiskKeepsDocumentCleanAndClearsUndo() {
         let document = makeDocument()
         let editor = EditorViewController(
             document: document,
             text: "abc",
             selections: [NSRange(location: 1, length: 0)]
         )
-        let undo = try XCTUnwrap(editor.textView.undoManager)
 
-        undo.beginUndoGrouping()
         editor.textView.insertText(
             "Z",
             replacementRange: NSRange(location: NSNotFound, length: 0)
         )
-        undo.endUndoGrouping()
         XCTAssertTrue(document.isDirty)
-        XCTAssertTrue(undo.canUndo)
+        XCTAssertTrue(editor.engine.history.canUndo)
 
         editor.replaceTextFromDisk("reloaded")
         document.markReloaded(
@@ -253,64 +227,82 @@ final class EditorIntegrationTests: XCTestCase {
             signature: nil
         )
 
-        XCTAssertEqual(editor.textView.text, "reloaded")
+        XCTAssertEqual(editor.currentText, "reloaded")
         XCTAssertFalse(document.isDirty)
-        XCTAssertFalse(undo.canUndo)
+        XCTAssertFalse(editor.engine.history.canUndo)
         XCTAssertEqual(
             editor.currentSelections(),
             [NSRange(location: 2, length: 0)]
         )
     }
 
-    func testReplaceTextFromDiskOnCleanDocumentDoesNotMarkDirty() throws {
+    func testReplaceTextFromDiskOnCleanDocumentDoesNotMarkDirty() {
         let document = makeDocument()
         let editor = EditorViewController(
             document: document,
             text: "abc",
             selections: [NSRange(location: 1, length: 0)]
         )
-        let undo = try XCTUnwrap(editor.textView.undoManager)
 
         editor.replaceTextFromDisk("reloaded")
 
-        XCTAssertEqual(editor.textView.text, "reloaded")
+        XCTAssertEqual(editor.currentText, "reloaded")
         XCTAssertFalse(document.isDirty)
-        XCTAssertFalse(undo.canUndo)
+        XCTAssertFalse(editor.engine.history.canUndo)
         XCTAssertEqual(
             editor.currentSelections(),
             [NSRange(location: 1, length: 0)]
         )
     }
 
-    func testEditingFreezeDuringTerminationCanBeReversed() throws {
+    func testEditingFreezeDuringTerminationCanBeReversed() {
         let editor = EditorViewController(
             document: makeDocument(),
             text: "",
             selections: [NSRange(location: 0, length: 0)]
         )
-        let undo = try XCTUnwrap(editor.textView.undoManager)
-        // 与 testTypingTwiceKeepsMultipleCarets 相同：测试环境没有真实事件边界，
-        // 改为手动分组，确保冻结前后的两次输入是两步撤销。
-        undo.groupsByEvent = false
 
-        performInsertion("A", in: editor, undo: undo)
+        performInsertion("A", in: editor)
         editor.setEditingEnabled(false)
 
         XCTAssertFalse(editor.isEditingEnabled)
-        XCTAssertNil(editor.textView.undoManager)
+        XCTAssertFalse(editor.engine.isEditable)
         editor.textView.insertText(
             "B",
             replacementRange: NSRange(location: NSNotFound, length: 0)
         )
-        XCTAssertEqual(editor.textView.text, "A")
+        XCTAssertEqual(editor.currentText, "A")
 
         editor.setEditingEnabled(true)
-        performInsertion("C", in: editor, undo: undo)
-        XCTAssertEqual(editor.textView.text, "AC")
+        XCTAssertTrue(editor.engine.isEditable)
+        performInsertion("C", in: editor)
+        XCTAssertEqual(editor.currentText, "AC")
 
-        undo.undo()
-        spinMainRunLoop()
-        XCTAssertEqual(editor.textView.text, "A")
+        XCTAssertTrue(editor.engine.undo())
+        XCTAssertEqual(editor.currentText, "A")
+    }
+
+    func testSaveMarksBothDocumentAndEngineClean() {
+        let document = makeDocument()
+        let editor = EditorViewController(
+            document: document,
+            text: "abc",
+            selections: [NSRange(location: 1, length: 0)]
+        )
+
+        performInsertion("Z", in: editor)
+        XCTAssertTrue(editor.engine.isDirty)
+
+        document.markSaved(
+            to: URL(fileURLWithPath: "/tmp/saved.txt"),
+            signature: nil
+        )
+        editor.markSaved()
+
+        XCTAssertFalse(document.isDirty)
+        XCTAssertFalse(editor.engine.isDirty)
+        // 保存不清空撤销历史，与 1.0.2 行为一致。
+        XCTAssertTrue(editor.engine.history.canUndo)
     }
 
     func testLoadingOneHundredThousandLinesDoesNotCrash() {
@@ -321,30 +313,18 @@ final class EditorIntegrationTests: XCTestCase {
             selections: [NSRange(location: 0, length: 0)]
         )
 
-        XCTAssertEqual(editor.textView.text?.utf16.count, text.utf16.count)
+        XCTAssertEqual(editor.currentText.utf16.count, text.utf16.count)
         XCTAssertEqual(
             editor.currentSelections(),
             [NSRange(location: 0, length: 0)]
         )
     }
 
-    private func performInsertion(
-        _ string: String,
-        in editor: EditorViewController,
-        undo: UndoManager
-    ) {
-        undo.beginUndoGrouping()
+    private func performInsertion(_ string: String, in editor: EditorViewController) {
         editor.textView.insertText(
             string,
             replacementRange: NSRange(location: NSNotFound, length: 0)
         )
-        undo.endUndoGrouping()
-        spinMainRunLoop()
-    }
-
-    /// 模拟真实事件循环，让延迟的选区恢复和撤销分组收尾。
-    private func spinMainRunLoop() {
-        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
     }
 
     private func makeDocument() -> Document {

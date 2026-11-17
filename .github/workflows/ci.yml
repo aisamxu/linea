@@ -1,10 +1,12 @@
 name: CI
 
 on:
-  # 只在推送 v* 版本标签时构建，避免日常分支和 PR 反复占用 macOS runner
+  # 只在推送 v* 版本标签时构建，避免日常分支和 PR 反复占用 macOS runner；
+  # workflow_dispatch 用于手动构建候选包，此时没有 tag，跳过版本一致性断言。
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -51,17 +53,6 @@ jobs:
         run: |
           set -euo pipefail
           xcodegen generate
-
-      - name: Resolve Swift packages
-        shell: bash
-        run: |
-          set -euo pipefail
-          xcodebuild \
-            -project Linea.xcodeproj \
-            -scheme Linea \
-            -resolvePackageDependencies \
-            -derivedDataPath build \
-            -clonedSourcePackagesDirPath "$PWD/build/SourcePackages"
 
       - name: Run tests
         shell: bash
@@ -144,13 +135,19 @@ jobs:
           print(f"LSMinimumSystemVersion: {version}")
           PY
 
+          # 版本号以构建出的 Info.plist 为唯一事实源，CI 不再维护第二份硬编码；
+          # 升级版本只需改 project.yml。
           APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST")"
           APP_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST")"
-          test "$APP_VERSION" = "1.0.2"
-          test "$APP_BUILD" = "3"
-          if [[ "$GITHUB_REF_NAME" != "v1.0.2" && "$GITHUB_REF_NAME" != v1.0.2-* ]]; then
-            echo "tag $GITHUB_REF_NAME 与 app 版本 $APP_VERSION 不一致" >&2
-            exit 1
+          test -n "$APP_VERSION"
+          test -n "$APP_BUILD"
+          # tag 触发时必须保证 tag 与 app 版本一致（如 v1.0.2、v1.1.0-rc.1）；
+          # workflow_dispatch 是分支构建，GITHUB_REF_TYPE 为 branch，跳过该断言。
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            if [[ "$GITHUB_REF_NAME" != "v${APP_VERSION}" && "$GITHUB_REF_NAME" != "v${APP_VERSION}-"* ]]; then
+              echo "tag $GITHUB_REF_NAME 与 app 版本 $APP_VERSION 不一致" >&2
+              exit 1
+            fi
           fi
 
           echo "Version: $APP_VERSION ($APP_BUILD)"
@@ -166,6 +163,7 @@ jobs:
           set -euo pipefail
           APP="build/Build/Products/Release/Linea.app"
           VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
+          BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")"
           DMG="Linea-${VERSION}-macos-arm64.dmg"
           STAGE="$(mktemp -d)"
           MOUNT_ROOT="$(mktemp -d)"
@@ -203,7 +201,7 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$MOUNT/Linea.app"
           test "$(lipo -archs "$MOUNT/Linea.app/Contents/MacOS/Linea")" = "arm64"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$MOUNT/Linea.app/Contents/Info.plist")" = "$VERSION"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$MOUNT/Linea.app/Contents/Info.plist")" = "3"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$MOUNT/Linea.app/Contents/Info.plist")" = "$BUILD"
           test "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$MOUNT/Linea.app/Contents/Info.plist")" = "14.0"
           # ad-hoc 签名未公证，spctl 预期拒绝，仅记录便于排查。
           spctl --assess --type execute --verbose=4 "$MOUNT/Linea.app" 2>&1 || true

@@ -19,12 +19,11 @@ settings:
     DEAD_CODE_STRIPPING: YES
 
 packages:
-  # 项目内 vendored 2.4.1，含多光标性能补丁；补丁说明见 Vendor/STTextView/LINEA_PATCHES.md
-  STTextView:
-    path: Vendor/STTextView
-  STTextKitPlus:
-    url: https://github.com/krzyzanowskim/STTextKitPlus.git
-    exactVersion: 0.3.1
+  # 自建文本内核与布局/渲染层。
+  LineaCore:
+    path: Packages/LineaCore
+  LineaTextUI:
+    path: Packages/LineaTextUI
 
 targets:
   Linea:
@@ -51,10 +50,10 @@ targets:
         Debug:
           ENABLE_TESTABILITY: YES
     dependencies:
-      - package: STTextView
-        product: STTextView
-      - package: STTextKitPlus
-        product: STTextKitPlus
+      - package: LineaCore
+        product: LineaCore
+      - package: LineaTextUI
+        product: LineaTextUI
     scheme:
       testTargets:
         - LineaTests
@@ -68,10 +67,10 @@ targets:
       - path: Tests/LineaTests
     dependencies:
       - target: Linea
-      - package: STTextView
-        product: STTextView
-      - package: STTextKitPlus
-        product: STTextKitPlus
+      - package: LineaCore
+        product: LineaCore
+      - package: LineaTextUI
+        product: LineaTextUI
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.samxu.LineaTests

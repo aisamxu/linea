@@ -1,0 +1,38 @@
+name: Core Tests
+
+# LineaCore 只依赖 Foundation，但词边界使用 NSString 的 byWords 枚举，
+# swift-corelibs-foundation 不支持该选项，因此测试放在 macOS runner。
+# 路径过滤保证只在核心包变更时触发。
+
+on:
+  pull_request:
+    paths:
+      - 'Packages/LineaCore/**'
+      - '.github/workflows/core-ci.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'Packages/LineaCore/**'
+      - '.github/workflows/core-ci.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: core-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: LineaCore tests
+    runs-on: macos-15
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Run LineaCore tests
+        shell: bash
+        run: swift test --package-path Packages/LineaCore
