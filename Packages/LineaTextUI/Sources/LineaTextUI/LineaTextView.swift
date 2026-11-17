@@ -748,9 +748,11 @@ public final class LineaTextView:
         let point = convert(event.locationInWindow, from: nil)
         let index = layoutEngine.index(at: point)
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        // Option 也用于多光标，不能当作普通单击（否则会折叠选区并启动拖拽选择）。
         let isPlainClick = !flags.contains(.command)
             && !flags.contains(.shift)
             && !flags.contains(.control)
+            && !flags.contains(.option)
 
         // 无修饰键单击按在非空选区内：先保留选区，等拖动超过阈值再启动移动拖拽；
         // 若只是单击，在 mouseUp 时再折叠为光标。双击/三击不参与，保留选词/选行。
@@ -840,6 +842,16 @@ public final class LineaTextView:
         }
         if modifiers.contains(.shift), modifiers.contains(.control) {
             appendCursor(at: index)
+            return
+        }
+        // Option+点击：与 ⌘+点击一致添加/移除光标；配合 Shift 只追加不切换，
+        // 对齐 Sublime / VS Code 在 macOS 上的鼠标多光标习惯。
+        if modifiers.contains(.option) {
+            if modifiers.contains(.shift) {
+                appendCursor(at: index)
+            } else {
+                toggleCursor(at: index)
+            }
             return
         }
         if clickCount >= 3 {
