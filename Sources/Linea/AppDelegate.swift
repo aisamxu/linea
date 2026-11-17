@@ -168,6 +168,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             return .terminateLater
         }
 
+        // 顺序必须是「提交输入法组合 → 收集会话 → 冻结」，
+        // 否则会话快照可能缺少最后一次组合提交。
+        windowManager.commitPendingInput()
         let collected = windowManager.collectSession()
 
         // 没有窗口/标签时不写会话，并确保旧快照不会在下次启动重放。

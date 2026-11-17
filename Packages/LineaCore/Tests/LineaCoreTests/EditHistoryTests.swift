@@ -65,6 +65,48 @@ struct EditHistoryTests {
         #expect(merged.timestamp == 0.2)
     }
 
+    @Test func breakCoalescingSplitsNextTypingStep() {
+        let history = EditHistory()
+        history.record(transaction(location: 0, text: "a", origin: .typing))
+        history.breakCoalescing()
+        history.record(
+            transaction(location: 1, text: "b", timestamp: 0.1, origin: .typing)
+        )
+
+        #expect(history.undoCount == 2)
+        #expect(history.undoEntries.map { $0.edits[0].replacement } == ["a", "b"])
+    }
+
+    @Test func coalescingResumesAfterBarrierIsConsumed() {
+        let history = EditHistory()
+        history.record(transaction(location: 0, text: "a", origin: .typing))
+        history.breakCoalescing()
+        history.record(
+            transaction(location: 1, text: "b", timestamp: 0.1, origin: .typing)
+        )
+        // 屏障只影响紧接着的一次记录，之后重新按时间窗口合并。
+        history.record(
+            transaction(location: 2, text: "c", timestamp: 0.2, origin: .typing)
+        )
+
+        #expect(history.undoCount == 2)
+        #expect(history.undoEntries[1].edits[0].replacement == "bc")
+    }
+
+    @Test func clearResetsCoalescingBarrier() {
+        let history = EditHistory()
+        history.record(transaction(location: 0, text: "a", origin: .typing))
+        history.breakCoalescing()
+        history.clear()
+
+        history.record(transaction(location: 0, text: "b", origin: .typing))
+        history.record(
+            transaction(location: 1, text: "c", timestamp: 0.1, origin: .typing)
+        )
+
+        #expect(history.undoCount == 1)
+    }
+
     @Test func coalescingStopsAtWindowBoundary() {
         let history = EditHistory()
         history.record(transaction(location: 0, text: "a", origin: .typing))

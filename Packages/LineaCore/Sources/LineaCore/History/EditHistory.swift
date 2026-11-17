@@ -63,6 +63,8 @@ public final class EditHistory {
     private var redoStack: [EditTransaction] = []
     private var undoBytes = 0
     private var redoBytes = 0
+    /// 强制下一个事务单独成步的屏障。用于编辑冻结/解冻等历史边界场景。
+    private var coalescingBarrier = false
 
     public init(limits: Limits = Limits()) {
         self.limits = limits
@@ -78,12 +80,23 @@ public final class EditHistory {
     public var undoEntries: [EditTransaction] { undoStack }
     public var redoEntries: [EditTransaction] { redoStack }
 
+    /// 打断连续键入合并：下一次记录的事务不再与上一条合并。
+    /// 编辑冻结/解冻、IME 提交等历史边界应显式调用，不能依赖 0.5s 时间窗口。
+    public func breakCoalescing() {
+        coalescingBarrier = true
+    }
+
     /// 记录新事务。新编辑立即清空 redo；随后按条目/字节上限淘汰最旧的历史。
     public func record(_ transaction: EditTransaction) {
         redoStack.removeAll()
         redoBytes = 0
 
-        if let previous = undoStack.last,
+        // 屏障存在时跳过合并，并立即消费屏障：只有紧接着的一次记录受影响。
+        if coalescingBarrier {
+            coalescingBarrier = false
+            undoStack.append(transaction)
+            undoBytes += transaction.memoryCost
+        } else if let previous = undoStack.last,
            Self.canCoalesce(previous: previous, next: transaction)
         {
             let merged = Self.merged(previous: previous, next: transaction)
@@ -137,6 +150,7 @@ public final class EditHistory {
         redoStack.removeAll()
         undoBytes = 0
         redoBytes = 0
+        coalescingBarrier = false
     }
 
     // MARK: - 上限

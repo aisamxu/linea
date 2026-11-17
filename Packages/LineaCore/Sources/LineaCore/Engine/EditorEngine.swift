@@ -272,6 +272,12 @@ public final class EditorEngine {
         isDirty = false
     }
 
+    /// 打断连续键入合并，下一次编辑单独成步。
+    /// 编辑冻结/解冻这类历史边界必须显式调用，不能依赖 0.5s 时间窗口。
+    public func breakUndoCoalescing() {
+        history.breakCoalescing()
+    }
+
     // MARK: - 输入法组合
 
     /// 更新 marked text。组合期间 buffer 不变，只记录待提交状态。

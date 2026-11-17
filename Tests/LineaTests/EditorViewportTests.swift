@@ -1,9 +1,11 @@
 import AppKit
-import STTextKitPlus
-import STTextView
+import LineaCore
 import XCTest
 @testable import Linea
 
+/// 视口集成测试：粘贴/重载/多光标后文档尾部可见，不出现空白尾巴。
+///
+/// 断言从 TextKit 的 viewport/layout fragment 改为自建布局引擎的行几何。
 @MainActor
 final class EditorViewportTests: XCTestCase {
     private var windows: [NSWindow] = []
@@ -18,7 +20,10 @@ final class EditorViewportTests: XCTestCase {
     }
 
     func testPaste60LinesLaysOutAndShowsTail() {
-        let editor = makeEditorWindow(text: "", selections: [NSRange(location: 0, length: 0)])
+        let editor = makeEditorWindow(
+            text: "",
+            selections: [NSRange(location: 0, length: 0)]
+        )
         let pasted = sixtyLines()
 
         editor.textView.insertText(
@@ -27,7 +32,7 @@ final class EditorViewportTests: XCTestCase {
         )
         waitForViewportToSettle(editor)
 
-        XCTAssertEqual(editor.textView.text, pasted)
+        XCTAssertEqual(editor.currentText, pasted)
         assertTailVisible(in: editor, expectedLineCount: 60)
     }
 
@@ -37,7 +42,9 @@ final class EditorViewportTests: XCTestCase {
             text: existing,
             selections: [NSRange(location: (existing as NSString).length, length: 0)]
         )
-        editor.textView.scrollRangeToVisible(NSRange(location: (existing as NSString).length, length: 0))
+        editor.textView.scrollRangeToVisible(
+            NSRange(location: (existing as NSString).length, length: 0)
+        )
         waitForViewportToSettle(editor)
 
         let pasted = "\n" + sixtyLines()
@@ -69,7 +76,9 @@ final class EditorViewportTests: XCTestCase {
             text: oldText,
             selections: [NSRange(location: (oldText as NSString).length, length: 0)]
         )
-        editor.textView.scrollRangeToVisible(NSRange(location: (oldText as NSString).length, length: 0))
+        editor.textView.scrollRangeToVisible(
+            NSRange(location: (oldText as NSString).length, length: 0)
+        )
         waitForViewportToSettle(editor)
 
         let newText = sixtyLines()
@@ -139,8 +148,7 @@ final class EditorViewportTests: XCTestCase {
     }
 
     private func waitForViewportToSettle(_ editor: EditorViewController) {
-        // 只推进事件循环，让 STTextView 和 App 侧的异步 viewport 修复自己完成布局；
-        // 测试不能在这里主动强制 layout，否则会掩盖用户报告的空白问题。
+        // 只推进事件循环，让窗口布局与滚动跟随自己完成。
         for _ in 0..<6 {
             RunLoop.current.run(until: Date().addingTimeInterval(0.05))
         }
@@ -153,29 +161,20 @@ final class EditorViewportTests: XCTestCase {
         line: UInt = #line
     ) {
         let textView = editor.textView
-        let layoutManager = textView.textLayoutManager
-        guard let contentManager = layoutManager.textContentManager else {
-            return XCTFail("missing text content manager", file: file, line: line)
-        }
+        let layout = textView.layoutEngine
 
-        let text = textView.text ?? ""
         XCTAssertEqual(
-            text.components(separatedBy: "\n").count,
+            editor.currentText.components(separatedBy: "\n").count,
             expectedLineCount,
             file: file, line: line
         )
+        XCTAssertEqual(layout.lineCount, expectedLineCount, file: file, line: line)
 
-        let documentEnd = contentManager.documentRange.endLocation
-        let documentLength = contentManager.offset(
-            from: contentManager.documentRange.location,
-            to: documentEnd
-        )
-
-        let usageHeight = layoutManager.usageBoundsForTextContainer.height
+        // 文档高度必须覆盖全部行，且超出可见区域。
         XCTAssertGreaterThanOrEqual(
             textView.frame.height + 2,
-            usageHeight,
-            "document height \(textView.frame.height) < usage bounds \(usageHeight)",
+            layout.documentHeight,
+            "document height \(textView.frame.height) < layout height \(layout.documentHeight)",
             file: file, line: line
         )
         XCTAssertGreaterThan(
@@ -185,39 +184,12 @@ final class EditorViewportTests: XCTestCase {
             file: file, line: line
         )
 
-        guard let viewportRange = layoutManager.textViewportLayoutController.viewportRange else {
-            return XCTFail("missing viewport range", file: file, line: line)
-        }
-        let viewportEnd = contentManager.offset(
-            from: contentManager.documentRange.location,
-            to: viewportRange.endLocation
-        )
-        XCTAssertGreaterThanOrEqual(
-            viewportEnd,
-            documentLength,
-            "viewportRange \(viewportRange) does not cover document end",
-            file: file, line: line
-        )
-
-        // 取最后一行文本的 range，避免空文档尾部 extra line fragment 的零高问题。
-        let nsText = text as NSString
-        let lastNewline = nsText.range(of: "\n", options: .backwards)
-        let lastLineStart = lastNewline.location == NSNotFound ? 0 : lastNewline.location + 1
-        let lastLineRange = NSRange(
-            location: lastLineStart,
-            length: max(0, nsText.length - lastLineStart)
-        )
-        guard let lastTextRange = NSTextRange(lastLineRange, in: contentManager),
-              let lastFrame = layoutManager.textSegmentFrame(in: lastTextRange, type: .standard)
-        else {
-            return XCTFail("missing last line segment frame", file: file, line: line)
-        }
-
+        // 最后一行必须与可见矩形相交，没有空白尾巴。
+        let lastLineRect = layout.caretRect(for: editor.engine.length)
         let visibleRect = editor.scrollView.documentVisibleRect
-        XCTAssertFalse(lastFrame.isNull, file: file, line: line)
         XCTAssertTrue(
-            lastFrame.intersects(visibleRect),
-            "last line frame \(lastFrame) does not intersect visible rect \(visibleRect)",
+            lastLineRect.intersects(visibleRect),
+            "last line rect \(lastLineRect) does not intersect visible rect \(visibleRect)",
             file: file, line: line
         )
     }

@@ -154,6 +154,13 @@ final class WindowManager {
 
     // MARK: - 会话
 
+    /// 退出前提交所有窗口、所有标签的输入法组合。
+    func commitPendingInput() {
+        for controller in windowControllers {
+            controller.commitPendingInput()
+        }
+    }
+
     func collectSession() -> (windows: [WindowSnapshot], drafts: [String: String]) {
         let activeController = activeWindowController
         var windows: [WindowSnapshot] = []

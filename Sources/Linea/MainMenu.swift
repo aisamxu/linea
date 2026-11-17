@@ -1,5 +1,4 @@
 import AppKit
-import STTextView
 
 /// 纯代码构建英文主菜单。文档/编辑/查找/多光标动作通过 responder chain
 /// 交给当前 EditorWindowController 处理。
@@ -141,8 +140,8 @@ enum MainMenu {
 
         menu.addItem(item("Cut", #selector(NSText.cut(_:)), "x"))
         menu.addItem(item("Copy", #selector(NSText.copy(_:)), "c"))
-        // 纯文本编辑器：⌘V 始终按纯文本粘贴，避免带入 RTF 字体和颜色。
-        menu.addItem(item("Paste", #selector(STTextView.pasteAsPlainText(_:)), "v"))
+        // 纯文本编辑器：LineaTextView.paste 只读 .string，不会带入 RTF 字体和颜色。
+        menu.addItem(item("Paste", #selector(NSText.paste(_:)), "v"))
         menu.addItem(item("Delete", #selector(NSText.delete(_:))))
         menu.addItem(item("Select All", #selector(NSText.selectAll(_:)), "a"))
 

@@ -3,7 +3,7 @@ import Foundation
 
 /// 一个标签页对应的文档元数据。
 ///
-/// 文本内容本身由 EditorViewController 中的 STTextView 持有；这里只保存路径、
+/// 文本内容本身由 EditorViewController 中的 EditorEngine 持有；这里只保存路径、
 /// 显示名称、脏状态和“上次保存/载入时的磁盘签名”。
 final class Document: ObservableObject, Identifiable {
     let id: UUID

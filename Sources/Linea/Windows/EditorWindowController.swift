@@ -234,6 +234,9 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     func closeTab(_ tab: EditorTab) -> Bool {
         guard session.tabs.contains(where: { $0.id == tab.id }) else { return true }
 
+        // 关闭前先提交输入法组合，保证脏检查针对最终文本。
+        tab.editor.commitPendingInput()
+
         if tab.document.isDirty {
             switch Alerts.confirmClose(documentName: tab.document.displayName) {
             case .cancel:
@@ -321,6 +324,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     private func write(tab: EditorTab, to url: URL) -> Bool {
         do {
+            // currentText 会先提交输入法组合，确保 marked text 一并落盘。
             try DocumentStore.writeText(tab.editor.currentText, to: url)
         } catch {
             Alerts.error(
@@ -332,6 +336,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
         let signature = DocumentStore.currentSignature(of: url)
         tab.document.markSaved(to: url, signature: signature)
+        tab.editor.markSaved()
         updateWindowChrome()
 
         if session.selectedTab === tab {
@@ -399,6 +404,13 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         return drafts
     }
 
+    /// 提交所有标签的输入法组合；退出收集会话前调用，保证快照包含最终文本。
+    func commitPendingInput() {
+        for tab in session.tabs {
+            tab.editor.commitPendingInput()
+        }
+    }
+
     func prepareForTermination() {
         isTerminating = true
         setEditingEnabled(false)
@@ -421,6 +433,9 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard sender === window else { return true }
         if isTerminating { return true }
+
+        // 脏检查前先提交输入法组合，避免把 marked text 当成未修改。
+        commitPendingInput()
 
         // 关闭窗口时逐个处理脏标签，任一取消就保留整个窗口。
         for tab in session.tabs where tab.document.isDirty {

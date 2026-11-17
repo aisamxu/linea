@@ -2,6 +2,8 @@ import AppKit
 import XCTest
 @testable import Linea
 
+/// 多光标结构护栏：一次按键一个变更、不重建全文、不创建插入点子视图。
+/// 时间断言只做 Debug 宽松护栏，真实目标以 Release 性能数据为准。
 @MainActor
 final class MultiCursorPerformanceTests: XCTestCase {
     private var windows: [NSWindow] = []
@@ -15,30 +17,40 @@ final class MultiCursorPerformanceTests: XCTestCase {
         super.tearDown()
     }
 
-    func testOneKeypressWritesSelectionsOnceAt60And500() {
+    func testOneKeypressEmitsSingleChangeAt60And500() {
         for lineCount in [60, 500] {
             let editor = makeEditor(lineCount: lineCount)
             runLoopBriefly()
 
-            TextSelectionBridge.setRangesCallCount = 0
+            var changeCount = 0
+            editor.textView.onChange = { _ in changeCount += 1 }
+            let buildsBefore = editor.engine.fullTextBuildCount
+
             editor.textView.insertText(
                 "X",
                 replacementRange: NSRange(location: NSNotFound, length: 0)
             )
-            _ = editor.currentSelections()
 
             XCTAssertEqual(
-                TextSelectionBridge.setRangesCallCount,
+                changeCount,
                 1,
-                "\(lineCount) cursors should restore selections exactly once"
+                "\(lineCount) cursors should produce exactly one change"
             )
+            // 编辑热路径不构建全文缓存。
+            XCTAssertEqual(
+                editor.engine.fullTextBuildCount,
+                buildsBefore,
+                "\(lineCount) cursors must not rebuild full text"
+            )
+            // 光标与选区直接绘制，不创建每个光标的子视图。
+            XCTAssertTrue(editor.textView.subviews.isEmpty)
             XCTAssertEqual(editor.currentSelections().count, lineCount)
         }
     }
 
     func test500SelectionsSurviveInsertAndDelete() {
         let editor = makeEditor(lineCount: 500)
-        let originalText = editor.textView.text ?? ""
+        let originalText = editor.currentText
         runLoopBriefly()
 
         editor.textView.insertText(
@@ -48,38 +60,31 @@ final class MultiCursorPerformanceTests: XCTestCase {
         XCTAssertEqual(editor.currentSelections().count, 500)
 
         editor.textView.deleteBackward(nil)
-        spinMainRunLoop()
 
         XCTAssertEqual(editor.currentSelections().count, 500)
-        XCTAssertEqual(editor.textView.text, originalText)
+        XCTAssertEqual(editor.currentText, originalText)
     }
 
-    func testSingleUndoRestores500SelectionEdit() throws {
+    func testSingleUndoRestores500SelectionEdit() {
         let editor = makeEditor(lineCount: 500)
-        let originalText = editor.textView.text ?? ""
-        let undo = try XCTUnwrap(editor.textView.undoManager)
+        let originalText = editor.currentText
         runLoopBriefly()
 
-        undo.beginUndoGrouping()
         editor.textView.insertText(
             "X",
             replacementRange: NSRange(location: NSNotFound, length: 0)
         )
-        undo.endUndoGrouping()
         XCTAssertEqual(editor.currentSelections().count, 500)
-        let insertedText = editor.textView.text
+        XCTAssertEqual(editor.engine.history.undoCount, 1)
+        let insertedText = editor.currentText
 
-        undo.undo()
-        spinMainRunLoop()
-
-        XCTAssertEqual(editor.textView.text, originalText)
+        XCTAssertTrue(editor.engine.undo())
+        XCTAssertEqual(editor.currentText, originalText)
         XCTAssertEqual(editor.currentSelections().count, 500)
 
         // 批量撤销应注册对应的批量重做，并恢复全部光标。
-        undo.redo()
-        spinMainRunLoop()
-
-        XCTAssertEqual(editor.textView.text, insertedText)
+        XCTAssertTrue(editor.engine.redo())
+        XCTAssertEqual(editor.currentText, insertedText)
         XCTAssertEqual(editor.currentSelections().count, 500)
     }
 
@@ -90,9 +95,7 @@ final class MultiCursorPerformanceTests: XCTestCase {
         print("[LineaPerf] insert 60 cursors: \(sixty * 1_000) ms")
         print("[LineaPerf] insert 500 cursors: \(fiveHundred * 1_000) ms")
 
-        // Debug 构建的宽松护栏，防止退回逐 range 编辑/O(k²) 级别的卡顿。
-        // CI 的 macOS 虚拟机明显慢于本机，这里留出约 4–5 倍余量；
-        // 真实交互目标以 LINEA_PATCHES.md 中的 Release 本机数据为准。
+        // Debug 构建的宽松护栏，防止退回逐光标视图或 O(k²) 级别的卡顿。
         XCTAssertLessThan(sixty, 0.150, "60-cursor insert took \(sixty)s")
         XCTAssertLessThan(fiveHundred, 1.000, "500-cursor insert took \(fiveHundred)s")
 
@@ -103,23 +106,18 @@ final class MultiCursorPerformanceTests: XCTestCase {
         }
     }
 
-    func testUndoLatency500() throws {
+    func testUndoLatency500() {
         let editor = makeEditor(lineCount: 500)
-        let undo = try XCTUnwrap(editor.textView.undoManager)
         runLoopBriefly()
 
-        undo.beginUndoGrouping()
         editor.textView.insertText(
             "X",
             replacementRange: NSRange(location: NSNotFound, length: 0)
         )
-        undo.endUndoGrouping()
-        _ = editor.currentSelections()
+        XCTAssertEqual(editor.currentSelections().count, 500)
 
         let start = CFAbsoluteTimeGetCurrent()
-        undo.undo()
-        spinMainRunLoop()
-        _ = editor.currentSelections()
+        XCTAssertTrue(editor.engine.undo())
         editor.scrollView.layoutSubtreeIfNeeded()
         let elapsed = CFAbsoluteTimeGetCurrent() - start
 
@@ -141,7 +139,6 @@ final class MultiCursorPerformanceTests: XCTestCase {
                 "X",
                 replacementRange: NSRange(location: NSNotFound, length: 0)
             )
-            _ = editor.currentSelections()
             editor.scrollView.layoutSubtreeIfNeeded()
             let elapsed = CFAbsoluteTimeGetCurrent() - start
             best = min(best, elapsed)
@@ -200,9 +197,5 @@ final class MultiCursorPerformanceTests: XCTestCase {
         for _ in 0..<3 {
             RunLoop.current.run(until: Date().addingTimeInterval(0.02))
         }
-    }
-
-    private func spinMainRunLoop() {
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
     }
 }
