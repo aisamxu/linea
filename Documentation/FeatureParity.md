@@ -13,7 +13,7 @@
 | 编号 | 行为 | 1.0.2 实现 | 要求 | 对拍 |
 | --- | --- | --- | --- | --- |
 | W1 | 多窗口 | File > New Window（⇧⌘N）；每窗口独立标签组 | ✅ | ☐ |
-| W2 | 标签栏 | 每窗口自定义 SwiftUI 标签栏：标题、脏点、关闭按钮、末尾 `+` | ✅ | ☐ |
+| W2 | 标签栏 | 每窗口自定义 SwiftUI 标签栏：标题、脏点、关闭按钮、末尾 `+`；1.1.0 起点击标签栏空白处与 ⌘N / ⌘T 一样新建标签 | ✅（新增空白点击） | ☐ |
 | W3 | 每标签独立状态 | 独立文本、选区、滚动位置、撤销历史 | ✅ | ☐ |
 | W4 | 切换标签 | 保留全部选区、主选区与滚动原点 | ✅ | ☐ |
 | W5 | 关闭脏标签 | Save / Don't Save / Cancel | ✅ | ☐ |
@@ -59,15 +59,15 @@
 
 | 编号 | 行为 | 1.0.2 实现 | 要求 | 对拍 |
 | --- | --- | --- | --- | --- |
-| A1 | 字体/行高 | 13pt `monospacedSystemFont`；lineHeightMultiple 1.2 | ✅ | ☐ |
+| A1 | 字体/行高 | 默认 13pt `monospacedSystemFont`；lineHeightMultiple 1.2；1.1.0 支持 10–24pt 缩放，行高随字号等比 | ✅（新增缩放） | ☐ |
 | A2 | Tab | `defaultTabInterval = 28pt`；无自定义 tab stops | ✅ | ☐ |
 | A3 | 换行 | 无软换行，横向滚动 | ✅ | ☐ |
 | A4 | 滚动条 | 横纵自动隐藏；无边框 | ✅ | ☐ |
-| A5 | 行号 | 始终显示；11pt 等宽数字；`.secondaryLabelColor`；右侧分隔线；最小宽度 35 | ✅ | ☐ |
+| A5 | 行号 | 始终显示；默认 11pt 等宽数字，随正文字号等比缩放；`.secondaryLabelColor`；右侧分隔线；最小宽度 35 | ✅ | ☐ |
 | A6 | 当前行高亮 | 无 | ❌ | — |
 | A7 | 外观 | 跟随系统浅色/深色；无主题设置 | ✅ | ☐ |
 | A8 | 文本服务 | 关闭拼写/语法/自动更正/自动替换/智能引号/自动补全；关闭字体面板 | ✅ | ☐ |
-| A9 | 缩放/偏好 | 无字体缩放、无偏好设置窗口 | ❌ | — |
+| A9 | 缩放/偏好 | 1.0.2 无字体缩放；1.1.0 新增 ⌘+/⌘-/⌘0（10–24pt，持久化），仍无偏好设置窗口 | ✅（新增缩放） | ☐ |
 
 ## 6. 查找与替换
 
@@ -204,15 +204,16 @@
 | 输入法 | I1、I2、I5、I6（marked text、主选区组合、提交边界、组合中 Esc/⌘Z） | `LineaTextViewInputMethodTests.swift`（15 个） |
 | 无障碍 | X1、X3（属性读取与通知） | `LineaTextViewAccessibilityTests.swift`（8 个） |
 | 布局几何 | 行高、命中测试、可见行、长行分块、行号宽度 | `CoreTextLayoutEngineTests`、`LongLineLayoutTests`、`TextGeometryTests` |
+| 字号缩放 | 10–24pt 夹取、偏好持久化、布局重建、顶部行不跳变、纯颜色切换不丢缓存 | `LineaTextViewTests`、`EditorFontZoomTests` |
 | App 集成 | 初始加载、越界 clamp、两次输入两步撤销、冻结、重载清历史、视口尾部、500 光标结构护栏 | `Tests/LineaTests`（已改写，待 CI 首次运行） |
 
-总计：LineaCore 125 个、LineaTextUI 133 个、App XCTest 21 个（11 集成 + 5 视口 + 5 性能护栏）。
+总计：LineaCore 125 个、LineaTextUI 136 个、App XCTest 61 个（核心/数据 28 + 窗口几何 7 + 焦点 1 + 集成 12 + 视口 5 + 性能护栏 5 + 字号缩放 3）。
 LineaCore/LineaTextUI 已在本机全部通过；App XCTest 因本机只有 CommandLineTools、没有 Xcode，
 无法本地执行，由 `.github/workflows/test-ci.yml` 在 macOS runner 上运行。
 
 ### 仍需人工实机验收
 
-- **窗口/标签/文件/会话**：W1–W10、F1–F7、D1–D4、S1–S5。这些逻辑未改动，但引擎切换后需确认保存、草稿、恢复、外部修改提示的实际流程。
+- **窗口/标签/文件/会话**：W1–W10、F1–F7、D1–D4、S1–S5。这些逻辑未改动，但引擎切换后需确认保存、草稿、恢复、外部修改提示的实际流程；另外确认点击标签栏空白处能新建标签，且点击标签/加号不会误建。
 - **外观**：A1–A9。字体、行高、tab、行号 gutter、浅色/深色外观需要目视对比 1.0.2。
 - **查找栏与菜单**：P2–P3、P7–P9、C4。查找栏外观与对齐、Aa/wd 开关、S*/R→/R* 按钮、Replace All 后滚动位置与行号、右键菜单项需要目视确认。
 - **真实输入路径**：I1–I4。中文/日文/韩文输入法、候选窗定位、听写、emoji picker 必须实机操作。
