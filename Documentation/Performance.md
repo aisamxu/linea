@@ -59,13 +59,48 @@
 | 10 MB 文本 + 单次插入 | 0.010–0.017 ms | ≤ 2 ms |
 | 10 万行 `lineNumber(at:)` | 0.12–0.13 µs/次 | ≤ 1 µs/次 |
 | 10 万行 + 500 光标插入 + 撤销（核心） | 2.6–3.6 ms | — |
+| 1 MB UTF-16 区间 `substring` | 1.2–1.6 ms | — |
 
 行号查询最初按 piece 内逐 code unit 扫描，100k 行实测约 5 µs/次；改为每 64 个 code unit
 记录累计终止符数后降到 0.13 µs/次。piece 从 8192 缩到 2048 后，500 次批量编辑从约
 5–6 ms 降到 2–3 ms，代价是 AVL 树节点增多，由压缩阈值兜底。
 
+`String(decoding: [UInt16], as: UTF16.self)` 在本机百万字符实测约 55–65 ms，
+是超长行布局的首个瓶颈；改为 `String(utf16CodeUnits:count:)` 后降到约 0.6 ms。
+同时新增 `utf16Units(in:)`，让布局层可以按块读取 UTF-16，避免为百万字符单行
+构造整行 `String`。
+
 Debug 测试只保留宽松护栏（2 MB/500 edits < 250 ms、10 MB 单编辑 < 50 ms、
-行号 < 20 µs/次），防止数量级退化，不作为性能结论。
+行号 < 20 µs/次、1 MB substring < 100 ms），防止数量级退化，不作为性能结论。
+
+## LineaTextUI Phase 2（2026-11-17）
+
+### 测量条件
+
+- 机器同上；`swift test -c release --package-path Packages/LineaTextUI`
+- 只测布局 + 直接绘制，不启动完整 App、不含窗口合成
+- 绘制目标为 900×600 的离屏位图；滚动测试连续绘制 60 帧，每帧前进约 20 行
+- 性能测试位于 `Packages/LineaTextUI/Tests/LineaTextUITests/LongLineLayoutTests.swift`
+- 长行参数：超过 32K UTF-16 的行分块；每块 4K UTF-16；可见块才创建 `CTLine`
+
+### 实测
+
+| 场景 | 实测 | Phase 2 目标 |
+| --- | ---: | ---: |
+| 打开 10 万行并完成首帧（引擎 + 可见行布局 + 绘制准备） | 2.5–2.7 ms | ≤ 100 ms |
+| 10 万行滚动 60 帧，平均 | 0.21–0.24 ms/帧 | ≤ 8 ms |
+| 10 万行滚动 60 帧，最差 | 1.4–1.5 ms | ≤ 8 ms |
+| 100 万 UTF-16 单行首次布局 + 行尾光标 + 命中测试 | 9.4–10.3 ms | 单帧 ≤ 16 ms |
+| 100 万字符单行，仅绘制首屏 900pt | 只生成 1 个可见块 | 不排版整行 |
+| 10 万行全选后重绘 | 只排版可见的 ≤ 45 行 | 不遍历全文 |
+
+1M 单行首次布局包含：读取 UTF-16 units（约 0.2 ms）、切块与前缀估算（约 3 ms）、
+行尾光标与命中测试（约 0.3–3 ms）。只绘制可见块，整行 `CTLine` 和整行 `String`
+均未构造。
+
+内存 gate（文本字节 × 3）尚未自动化：当前结构上只保留 piece 存储、超长行 UTF-16
+units、可见块 `CTLine` 和按行 CTLine 缓存（上限 2048 行）；大 frame 的窗口级
+footprint 需要在 Phase 5 用完整 App 实测。
 
 ## 1.1.0 目标（Phase 5 验收）
 
