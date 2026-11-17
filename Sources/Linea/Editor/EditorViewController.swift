@@ -91,10 +91,19 @@ final class EditorViewController: NSViewController {
 
     func focusEditor() {
         DispatchQueue.main.async { [weak self] in
-            guard let self, let window = self.view.window else { return }
-            if window.firstResponder !== self.textView {
-                window.makeFirstResponder(self.textView)
-            }
+            self?.focusEditorNow()
+        }
+    }
+
+    /// 立即把第一响应者交给文本视图。
+    ///
+    /// 窗口首次显示时必须紧跟 `makeKeyAndOrderFront` 同步调用：SwiftUI 的
+    /// `NSHostingView`（标签栏）会在窗口显示时把内部的 `KeyViewProxy` 设为
+    /// 第一响应者，异步聚焦会被它覆盖，表现为没有光标、键盘输入全部丢失。
+    func focusEditorNow() {
+        guard let window = view.window else { return }
+        if window.firstResponder !== textView {
+            window.makeFirstResponder(textView)
         }
     }
 

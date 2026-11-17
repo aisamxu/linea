@@ -156,6 +156,48 @@ struct LineaTextViewTests {
         #expect(textView.layoutEngine.layoutCount == 0)
     }
 
+    @Test func rulerClipsOversizedDirtyRectToItsBounds() {
+        let (_, _, ruler) = makeScrollView(text: "a\nb")
+        guard let context = makeBitmapContext(width: 900, height: 600) else {
+            Issue.record("无法创建位图 context")
+            return
+        }
+
+        // 先用黑色填满整块画布作为哨兵，再让 ruler 绘制。
+        context.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 900, height: 600))
+
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
+
+        // macOS 26 的 banner 式 NSRulerView 会把整个滚动视图当作脏矩形传入，
+        // 例如 (0, -64, 900, 600)。ruler 必须把绘制裁剪到自身 bounds，
+        // 否则背景和分隔线会盖住窗口上方的标签栏。
+        ruler.drawHashMarksAndLabels(in: NSRect(x: 0, y: -64, width: 900, height: 600))
+
+        guard let data = context.data else {
+            Issue.record("位图 context 没有数据")
+            return
+        }
+        let pixels = data.assumingMemoryBound(to: UInt8.self)
+        var leaked = 0
+        for y in stride(from: 0, to: 600, by: 10) {
+            for x in stride(from: 100, to: 900, by: 10) {
+                let offset = y * context.bytesPerRow + x * 4
+                if pixels[offset] != 0 || pixels[offset + 1] != 0 || pixels[offset + 2] != 0 {
+                    leaked += 1
+                }
+            }
+        }
+        #expect(leaked == 0, "ruler 绘制越界，污染了自身范围外的像素")
+    }
+
+    @Test func rulerClipsItsLayerToItsOwnBounds() {
+        let (_, _, ruler) = makeScrollView(text: "a")
+        #expect(ruler.layer?.masksToBounds == true)
+    }
+
     // MARK: - 绘制 smoke
 
     @Test func rendererDrawsOnlyVisibleLines() {

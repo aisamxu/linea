@@ -49,6 +49,10 @@ final class WindowManager {
             controller.window?.orderFront(nil)
         }
 
+        // 窗口显示后必须同步聚焦编辑器：SwiftUI 标签栏会在窗口出现时把
+        // KeyViewProxy 设为第一响应者，异步聚焦会被覆盖，导致无法输入。
+        controller.focusEditor()
+
         return controller
     }
 

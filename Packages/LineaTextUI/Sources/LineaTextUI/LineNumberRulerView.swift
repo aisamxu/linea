@@ -25,6 +25,12 @@ public final class LineNumberRulerView: NSRulerView {
         scrollView.hasVerticalRuler = true
         scrollView.rulersVisible = true
         textView.lineNumberRuler = self
+
+        // 系统 banner 式 ruler 会在自身边界外绘制装饰线和背景，进而盖住
+        // 窗口上方的标签栏；把 ruler 图层裁剪到自身范围。
+        wantsLayer = true
+        layer?.masksToBounds = true
+
         refresh()
     }
 
@@ -64,9 +70,19 @@ public final class LineNumberRulerView: NSRulerView {
         let layout = textView.layoutEngine
         let bounds = self.bounds
 
-        // 背景只填脏区域，避免滚动时重绘整条 ruler。
+        // 脏矩形必须与 ruler 自身范围求交：AppKit（macOS 26 的 banner 式 ruler）
+        // 会传入覆盖整个滚动视图的 rect，例如 (0, -64, 900, 600)。若不裁剪，
+        // 白色背景和分隔线会画到行号栏外，把上方标签栏整条盖住。
+        let dirtyRect = bounds.intersection(rect)
+        guard !dirtyRect.isEmpty else { return }
+
+        context.saveGState()
+        defer { context.restoreGState() }
+        context.clip(to: bounds)
+
+        // 背景只填裁剪后的脏区域，既避免滚动时重绘整条 ruler，也不会越界。
         context.setFillColor(theme.background.cgColor)
-        context.fill(rect)
+        context.fill(dirtyRect)
 
         // 文档坐标 -> ruler 坐标。滚动后 textView 原点位于 ruler 可见区域上方。
         let relativePoint = convert(NSPoint.zero, from: textView)
@@ -99,14 +115,14 @@ public final class LineNumberRulerView: NSRulerView {
             text.draw(at: NSPoint(x: x, y: y), withAttributes: attributes)
         }
 
-        // 右侧分隔线，与编辑器内容区分。
+        // 右侧分隔线，与编辑器内容区分；高度同样限制在 ruler 范围内。
         context.setFillColor(theme.lineNumberSeparator.cgColor)
         context.fill(
             CGRect(
                 x: bounds.maxX - 1,
-                y: rect.minY,
+                y: dirtyRect.minY,
                 width: 1,
-                height: rect.height
+                height: dirtyRect.height
             )
         )
     }

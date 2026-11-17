@@ -182,6 +182,11 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         selectTab(id: session.tabs[index].id)
     }
 
+    /// 同步聚焦当前标签的文本视图；窗口排序前别用，见 `EditorViewController.focusEditorNow()`。
+    func focusEditor() {
+        areaController.currentEditor?.focusEditorNow()
+    }
+
     func tab(forFileURL url: URL) -> EditorTab? {
         session.tab(forFileURL: url)
     }
