@@ -107,6 +107,26 @@ struct LineaCorePerformanceTests {
         )
     }
 
+    @Test func largeSubstringWithinBudget() {
+        let text = makeDocument(
+            repeating: "abcdefghijklmnopqrstuvwxyz0123456789\n",
+            size: 1_000_000
+        )
+        let buffer = PieceTreeBuffer(text: text)
+        var result = ""
+        let elapsed = bestOf(5) {
+            result = buffer.substring(in: NSRange(location: 0, length: buffer.length))
+        }
+        print("[LineaCorePerf] 1MB substring: \(milliseconds(elapsed)) ms")
+        #expect(result.utf16.count == buffer.length)
+
+        let budget = isDebugBuild ? 100.0 : 5.0
+        #expect(
+            milliseconds(elapsed) < budget,
+            "1MB substring took \(milliseconds(elapsed))ms"
+        )
+    }
+
     @Test func pieceCountStaysBoundedDuringRepeatedEdits() {
         let buffer = PieceTreeBuffer(
             text: makeDocument(repeating: "abcdefghijklmnopqrstuvwxyz\n", size: 100_000)

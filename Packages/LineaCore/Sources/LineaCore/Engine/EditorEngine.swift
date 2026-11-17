@@ -70,6 +70,11 @@ public final class EditorEngine {
         buffer.substring(in: range)
     }
 
+    /// 读取 UTF-16 code units，供超长行分块布局使用。
+    public func utf16Units(in range: NSRange) -> [UInt16] {
+        buffer.utf16Units(in: range)
+    }
+
     public func lineRange(at line: Int) -> NSRange {
         lineIndex.lineRange(at: line)
     }

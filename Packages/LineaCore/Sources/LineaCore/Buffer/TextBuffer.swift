@@ -25,6 +25,9 @@ public protocol TextBuffer: AnyObject {
     /// 读取区间文本；range 必须落在 `0...length` 内。
     func substring(in range: NSRange) -> String
 
+    /// 读取区间 UTF-16 code units；供布局分块使用，避免为超长行构造整行 String。
+    func utf16Units(in range: NSRange) -> [UInt16]
+
     /// 读取单个 UTF-16 code unit。
     func character(at offset: Int) -> UInt16?
 
