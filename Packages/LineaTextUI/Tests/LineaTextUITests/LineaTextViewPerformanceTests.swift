@@ -217,6 +217,31 @@ struct LineaTextViewPerformanceTests {
         #endif
     }
 
+    @Test func finderBuildsTenMegabyteStringAndSearchesWithinBudget() {
+        // 5 万行 × 100 UTF-16 code unit = 10 MB（UTF-16 字节）。
+        let line = String(repeating: "a", count: 99) + "\n"
+        let text = String(repeating: line, count: 50_000)
+        let view = makeView(text, selections: [.caret(at: 0)])
+
+        let start = CFAbsoluteTimeGetCurrent()
+        let full = view.string
+        let searchRange = (full as NSString).range(
+            of: "needle",
+            options: .backwards
+        )
+        let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
+
+        print("[LineaTextUI] 10MB 查找全文构建 + 搜索: \(elapsed) ms")
+        #expect(full.utf16.count == 5_000_000)
+        #expect(searchRange.location == NSNotFound)
+
+        #if DEBUG
+        #expect(elapsed < 3_000)
+        #else
+        #expect(elapsed < 100)
+        #endif
+    }
+
     @Test func hundredThousandLinesWithFiveHundredSparseCursors() {
         let text = String(repeating: "line\n", count: 99_999) + "line"
         let carets = (0..<500).map {

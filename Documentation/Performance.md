@@ -151,6 +151,26 @@ Debug 测试只保留数量级护栏（单/60 光标 < 300 ms、500 光标 < 2 s
 组合渲染不改 buffer，每帧只临时拼接「行前缀 + marked text + 行后缀」并排版一行；
 绘制路径只多画 marked text、下划线和组合光标，不触碰其他行。
 
+## LineaTextUI Phase 4 查找（2026-11-17）
+
+### 测量条件
+
+- 机器同上；`swift test -c release --package-path Packages/LineaTextUI --filter LineaTextViewPerformance`
+- 5 万行 × 100 UTF-16 code unit = 500 万 code unit（UTF-16 字节 10 MB）
+- 计时范围：`LineaTextView.string` 构建全文缓存 + `NSString.range(of:options:.backwards)` 一次全文搜索（未命中）
+- 只测单次冷启动，未取中位数；用于确认打开查找栏时主线程开销在 Phase 5 目标内
+- 性能测试位于 `LineaTextViewPerformanceTests.finderBuildsTenMegabyteStringAndSearchesWithinBudget`
+
+### 实测
+
+| 场景 | 实测 | Phase 4 目标 |
+| --- | ---: | ---: |
+| 10 MB 文档构建全文字符串 + 一次搜索 | 23.6 ms | 主线程无 > 100 ms 卡顿 |
+
+`NSTextFinderClient.string` 被查找栏读取时按需构建全文缓存，首次构建之后随编辑增量维护；
+本次耗时同时包含 `PieceTreeBuffer` 按 UTF-16 拼接全文与 NSString 搜索，仍低于 100 ms 门槛。
+Debug 测试只保留 3 s 数量级护栏。
+
 ## 1.1.0 目标（Phase 5 验收）
 
 本机 Release，900×600，中位数（best-of-5）：
