@@ -102,6 +102,37 @@ Debug 测试只保留宽松护栏（2 MB/500 edits < 250 ms、10 MB 单编辑 < 
 units、可见块 `CTLine` 和按行 CTLine 缓存（上限 2048 行）；大 frame 的窗口级
 footprint 需要在 Phase 5 用完整 App 实测。
 
+## LineaTextUI Phase 3（2026-11-17）
+
+### 测量条件
+
+- 机器同上；`swift test -c release --package-path Packages/LineaTextUI --filter LineaTextViewPerformance`
+- 场景为 `LineaTextView.insertText("x")`：所有光标一次事务，随后绘制一帧 900×600 可见区域（含文本、选区、光标）
+- 绘制前先预热可见行布局缓存，模拟连续输入时的稳定状态
+- `core` 为同文本、同选区的独立 `EditorEngine` 纯插入耗时，不含视图；`edit` 为视图路径（引擎 apply + 选区映射 + 布局失效 + frame 更新 + scroll-to-caret）；`draw` 为可见区域一位图绘制
+- 每组单次测量，未取中位数；数据用于确认数量级，Phase 5 再按 best-of-5 记录
+- 性能测试位于 `Packages/LineaTextUI/Tests/LineaTextUITests/LineaTextViewPerformanceTests.swift`
+
+### 实测
+
+| 场景 | core | edit | draw | 总计 | Phase 3 目标 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 单光标（1 万行文档） | 0.015 ms | 0.066 ms | 0.210 ms | 0.28 ms | ≤ 16 ms |
+| 60 光标 | 0.084 ms | 0.102 ms | 0.222 ms | 0.32 ms | ≤ 16 ms |
+| 500 光标 | 1.31 ms | 1.32 ms | 0.213 ms | 1.53 ms | ≤ 33 ms |
+| 500 光标 undo | — | — | — | 0.91 ms | ≤ 33 ms |
+| 10 万行 + 500 稀疏光标 insert | — | 1.68 ms | — | 1.68 ms | ≤ 100 ms |
+| 10 万行 + 500 稀疏光标 undo | — | — | — | 0.93 ms | ≤ 100 ms |
+
+视图路径相对纯引擎只增加固定开销：单光标多出约 0.05 ms（frame 更新、滚动、失效），
+500 光标多出约 0.01 ms（批量选区已由引擎一次算好，视图不逐个处理）。
+绘制只处理可见行，与文档总行数无关，因此 1 万行与 1000 行文档的 draw 基本持平。
+500 光标的核心耗时为选区批量映射与 500 个 piece 编辑，仍是当前最大项，距离 16 ms
+的 Phase 6 最终目标有约 10 倍余量。
+
+Debug 测试只保留数量级护栏（单/60 光标 < 300 ms、500 光标 < 2 s、
+10 万行 + 500 光标 insert/undo < 5 s），不作为性能结论。
+
 ## 1.1.0 目标（Phase 5 验收）
 
 本机 Release，900×600，中位数（best-of-5）：
