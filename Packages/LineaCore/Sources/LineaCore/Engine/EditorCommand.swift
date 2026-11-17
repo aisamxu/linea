@@ -12,6 +12,8 @@ public enum EditOrigin: Equatable, Sendable {
     case inputMethod
     /// 查找替换（含 Replace All）。
     case replaceAll
+    /// 拖放：移动或插入文本，一个 drop 一个历史条目。
+    case drag
     /// 程序化修改（重载、外部桥接等）。
     case programmatic
     case undo

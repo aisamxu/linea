@@ -13,6 +13,7 @@ public final class LineaTextView:
     NSView,
     NSTextInputClient,
     NSTextFinderClient,
+    NSDraggingSource,
     TextSurface
 {
     public let engine: EditorEngine
@@ -89,6 +90,17 @@ public final class LineaTextView:
     private var dragPoint: CGPoint = .zero
     private var dragScrollTimer: Timer?
 
+    /// 在非空选区内按下但尚未超过拖拽阈值时的源选区。
+    private var pendingDragSelection: NSRange?
+    private var pendingDragPoint: CGPoint = .zero
+    private var pendingDragClickCount = 1
+    /// 本视图发起的拖拽源范围；drop 时据此把复制升级为移动。
+    private var internalDragRange: NSRange?
+    /// 拖拽悬停的插入点；非 nil 时绘制落点指示线。
+    private(set) var dropInsertionOffset: Int?
+    private var dropPoint: CGPoint = .zero
+    private var dropScrollTimer: Timer?
+
     /// 连续垂直移动时保留每个光标的原始 x，避免经过短行后列位置漂移。
     private var verticalAnchorXs: [CGFloat]?
 
@@ -115,6 +127,9 @@ public final class LineaTextView:
         layerContentsRedrawPolicy = .onSetNeedsDisplay
         autoresizingMask = []
 
+        // 只声明纯文本：文件 URL 等类型不会触发拖入。
+        registerForDraggedTypes([.string])
+
         // 视图接管引擎回调：先更新布局/几何，再转发给外部控制器。
         previousOnChange = engine.onChange
         engine.onChange = { [weak self] change in
@@ -136,6 +151,7 @@ public final class LineaTextView:
         }
         caretBlinkTimer?.invalidate()
         dragScrollTimer?.invalidate()
+        dropScrollTimer?.invalidate()
     }
 
     public override var isFlipped: Bool { true }
@@ -230,7 +246,23 @@ public final class LineaTextView:
                 caretVisible: isCaretVisible,
                 composition: engine.composition
             )
+            drawDropIndicator(in: context, dirtyRect: dirtyRect)
         }
+    }
+
+    /// 拖拽悬停时在落点画一条竖向指示线。
+    private func drawDropIndicator(in context: CGContext, dirtyRect: CGRect) {
+        guard let offset = dropInsertionOffset, engine.isEditable else { return }
+        let caret = layoutEngine.caretRect(for: offset)
+        let indicator = CGRect(
+            x: caret.minX - 1,
+            y: caret.minY,
+            width: 2,
+            height: caret.height
+        )
+        guard indicator.intersects(dirtyRect) else { return }
+        context.setFillColor(theme.caret.withAlphaComponent(0.7).cgColor)
+        context.fill(indicator)
     }
 
     /// RELEASE 下若外部绕过视图直接改了引擎，绘制前重建缓存，禁止带病渲染。
@@ -652,6 +684,9 @@ public final class LineaTextView:
     // MARK: - 右键菜单
 
     public override func menu(for event: NSEvent) -> NSMenu? {
+        // 与 1.0.2 一致：空白处右键先选中点击处单词再弹菜单。
+        prepareContextMenuSelection(for: event)
+
         let menu = NSMenu()
         menu.addItem(
             withTitle: "Cut",
@@ -682,6 +717,19 @@ public final class LineaTextView:
         return menu
     }
 
+    /// 右键时若没有非空选区，先选中点击处的单词（C5）。
+    private func prepareContextMenuSelection(for event: NSEvent) {
+        // 已有非空选区时保留用户选择，不重新选词。
+        guard !engine.selections.contains(where: { !$0.isCaret }) else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        let index = layoutEngine.index(at: point)
+        if let range = engine.wordRange(at: index, mode: .word), range.length > 0 {
+            commitSelections([TextSelection(range: range)], source: .mouse)
+        } else {
+            commitSelections([.caret(at: index)], source: .mouse)
+        }
+    }
+
     // MARK: - 鼠标选择与多光标
 
     public override func mouseDown(with event: NSEvent) {
@@ -691,14 +739,29 @@ public final class LineaTextView:
         let point = convert(event.locationInWindow, from: nil)
         let index = layoutEngine.index(at: point)
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let isPlainClick = !flags.contains(.command)
+            && !flags.contains(.shift)
+            && !flags.contains(.control)
+
+        // 无修饰键单击按在非空选区内：先保留选区，等拖动超过阈值再启动移动拖拽；
+        // 若只是单击，在 mouseUp 时再折叠为光标。双击/三击不参与，保留选词/选行。
+        let primary = engine.primarySelection
+        if isPlainClick,
+           event.clickCount == 1,
+           !primary.isCaret,
+           index >= primary.range.location,
+           index <= NSMaxRange(primary.range)
+        {
+            pendingDragSelection = primary.range
+            pendingDragPoint = point
+            pendingDragClickCount = event.clickCount
+            return
+        }
+
         handleClick(at: index, clickCount: event.clickCount, modifiers: flags)
 
         // 只有无修饰键的单击开启拖拽选择；⌘/⇧ 点击不进入拖拽。
-        if event.clickCount == 1,
-           !flags.contains(.command),
-           !flags.contains(.shift),
-           !flags.contains(.control)
-        {
+        if event.clickCount == 1, isPlainClick {
             isDraggingSelection = true
             dragAnchorOffset = index
             dragPoint = point
@@ -706,16 +769,37 @@ public final class LineaTextView:
     }
 
     public override func mouseDragged(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+
+        // 选区内按下后拖动超过阈值：开始拖拽文本（移动/复制由落点决定）。
+        if let source = pendingDragSelection {
+            let distance = hypot(
+                point.x - pendingDragPoint.x,
+                point.y - pendingDragPoint.y
+            )
+            guard distance > 3 else { return }
+            pendingDragSelection = nil
+            startDragSession(source: source, with: event)
+            return
+        }
+
         guard isDraggingSelection, let anchor = dragAnchorOffset else {
             super.mouseDragged(with: event)
             return
         }
-        dragPoint = convert(event.locationInWindow, from: nil)
+        dragPoint = point
         extendDragSelection(anchor: anchor)
         updateDragAutoscroll()
     }
 
     public override func mouseUp(with event: NSEvent) {
+        // 在选区内按下但没拖动：按普通点击折叠为光标。
+        if pendingDragSelection != nil {
+            pendingDragSelection = nil
+            let point = convert(event.locationInWindow, from: nil)
+            let index = layoutEngine.index(at: point)
+            handleClick(at: index, clickCount: pendingDragClickCount, modifiers: [])
+        }
         endDrag()
         super.mouseUp(with: event)
     }
@@ -888,6 +972,286 @@ public final class LineaTextView:
         scrollView.reflectScrolledClipView(clipView)
         // 滚动后同一屏幕点对应新的文本偏移，重新扩展选区。
         extendDragSelection(anchor: anchor)
+    }
+
+    // MARK: - 拖放
+
+    /// 标记「本视图发起」的拖拽，drop 时据此移动而不是复制。
+    static let internalDragType = NSPasteboard.PasteboardType(
+        "com.aisamxu.linea.internal-drag"
+    )
+
+    /// 从已有选区开始拖拽；文本通过 `.string` 提供给其他应用。
+    private func startDragSession(source: NSRange, with event: NSEvent) {
+        let text = engine.substring(in: source)
+        guard !text.isEmpty else { return }
+        endDrag()
+
+        let item = NSPasteboardItem()
+        item.setString(text, forType: .string)
+        item.setString(
+            "\(source.location),\(source.length)",
+            forType: Self.internalDragType
+        )
+        internalDragRange = source
+
+        // 拖拽图像取选区首行矩形，宽度封顶避免长行生成超大位图。
+        let rects = layoutEngine.rects(for: source)
+        let first = rects.first ?? layoutEngine.caretRect(for: source.location)
+        let frame = CGRect(
+            x: first.minX,
+            y: first.minY,
+            width: min(max(first.width, 16), 320),
+            height: max(first.height, layoutEngine.lineHeight)
+        )
+        let draggingItem = NSDraggingItem(pasteboardWriter: item)
+        draggingItem.setDraggingFrame(
+            frame,
+            contents: draggingImage(for: text, size: frame.size)
+        )
+        beginDraggingSession(with: [draggingItem], event: event, source: self)
+    }
+
+    /// 拖拽时跟随鼠标的文本快照，只绘制首行前 200 个字符。
+    private func draggingImage(for text: String, size: CGSize) -> NSImage {
+        let firstLine = String(text.prefix(while: { !$0.isNewline }))
+        let clipped = String(firstLine.prefix(200))
+        let font = NSFont(
+            descriptor: CTFontCopyFontDescriptor(theme.font),
+            size: CTFontGetSize(theme.font)
+        ) ?? NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+
+        return NSImage(size: size, flipped: true) { [theme] rect in
+            theme.selection.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: 3, yRadius: 3).fill()
+            let attributed = NSAttributedString(
+                string: clipped,
+                attributes: [
+                    .font: font,
+                    .foregroundColor: theme.text,
+                ]
+            )
+            let textHeight = attributed.size().height
+            attributed.draw(
+                at: CGPoint(x: 4, y: max(0, (rect.height - textHeight) / 2))
+            )
+            return true
+        }
+    }
+
+    // MARK: NSDraggingSource
+
+    public func draggingSession(
+        _ session: NSDraggingSession,
+        sourceOperationMaskFor context: NSDraggingContext
+    ) -> NSDragOperation {
+        // 编辑器内部拖拽移动文本；拖到其他应用时复制。
+        context == .withinApplication ? [.move, .copy] : .copy
+    }
+
+    public func draggingSession(
+        _ session: NSDraggingSession,
+        endedAt screenPoint: NSPoint,
+        operation: NSDragOperation
+    ) {
+        // 移动由 destination 在 drop 时一次事务完成，这里只清理状态。
+        internalDragRange = nil
+        pendingDragSelection = nil
+    }
+
+    // MARK: NSDraggingDestination
+
+    public override func draggingEntered(
+        _ sender: NSDraggingInfo
+    ) -> NSDragOperation {
+        updateDropTarget(sender)
+    }
+
+    public override func draggingUpdated(
+        _ sender: NSDraggingInfo
+    ) -> NSDragOperation {
+        updateDropTarget(sender)
+    }
+
+    public override func draggingExited(_ sender: NSDraggingInfo?) {
+        clearDropTarget()
+    }
+
+    public override func draggingEnded(_ sender: NSDraggingInfo) {
+        clearDropTarget()
+    }
+
+    public override func prepareForDragOperation(
+        _ sender: NSDraggingInfo
+    ) -> Bool {
+        dropText(from: sender) != nil
+    }
+
+    public override func performDragOperation(
+        _ sender: NSDraggingInfo
+    ) -> Bool {
+        defer { clearDropTarget() }
+        guard let text = dropText(from: sender), !text.isEmpty else {
+            return false
+        }
+
+        let point = convert(sender.draggingLocation, from: nil)
+        let offset = layoutEngine.index(at: point)
+        let source = internalDragRange
+        internalDragRange = nil
+        return insertDroppedText(text, at: offset, moving: source)
+    }
+
+    /// drop 的落点逻辑：`moving` 非 nil 表示本视图内部移动，否则按复制插入。
+    @discardableResult
+    func insertDroppedText(
+        _ text: String,
+        at offset: Int,
+        moving source: NSRange?
+    ) -> Bool {
+        if let source {
+            return moveSelection(source: source, to: offset, text: text)
+        }
+
+        // 外部纯文本：插入到落点，不替换现有选区。
+        let caret = offset + text.utf16.count
+        return engine.apply(
+            edits: [
+                TextEdit(
+                    range: NSRange(location: offset, length: 0),
+                    replacement: text
+                )
+            ],
+            selectionAfter: [.caret(at: caret)],
+            origin: .drag
+        ) != nil
+    }
+
+    /// 只接受纯文本拖入：文件 URL 一律拒绝（与 1.0.2 一致，不支持拖入打开）。
+    private func dropText(from info: NSDraggingInfo) -> String? {
+        guard engine.isEditable, !engine.isComposing else { return nil }
+        let pasteboard = info.draggingPasteboard
+        guard !(pasteboard.types?.contains(.fileURL) ?? false) else { return nil }
+        guard pasteboard.types?.contains(.string) == true else { return nil }
+        return pasteboard.string(forType: .string)
+    }
+
+    /// 始终显示落点指示；返回拖动操作类型供系统绘制光标（移动/复制）。
+    private func updateDropTarget(
+        _ sender: NSDraggingInfo
+    ) -> NSDragOperation {
+        guard dropText(from: sender) != nil else {
+            clearDropTarget()
+            return []
+        }
+        let point = convert(sender.draggingLocation, from: nil)
+        dropInsertionOffset = layoutEngine.index(at: point)
+        updateDropAutoscroll(at: point)
+        needsDisplay = true
+        return internalDragRange != nil ? .move : .copy
+    }
+
+    private func clearDropTarget() {
+        guard dropInsertionOffset != nil || dropScrollTimer != nil else { return }
+        dropInsertionOffset = nil
+        stopDropScrollTimer()
+        needsDisplay = true
+    }
+
+    /// 内部移动：源选区与落点合成一批 edits，删除源后光标落在插入文本末尾。
+    private func moveSelection(
+        source: NSRange,
+        to offset: Int,
+        text: String
+    ) -> Bool {
+        // 落点在源选区内或紧邻边界：原地放下，不产生编辑和历史。
+        guard offset < source.location || offset > NSMaxRange(source) else {
+            return true
+        }
+        // 源在落点之前时，删除后目标坐标左移源长度。
+        var caret = offset
+        if source.location < offset {
+            caret -= source.length
+        }
+        caret += text.utf16.count
+
+        // apply 要求 edits 按 location 升序；落点在源之前时需交换顺序。
+        let edits = [
+            TextEdit(range: source, replacement: ""),
+            TextEdit(
+                range: NSRange(location: offset, length: 0),
+                replacement: text
+            ),
+        ].sorted { $0.range.location < $1.range.location }
+
+        return engine.apply(
+            edits: edits,
+            selectionAfter: [.caret(at: caret)],
+            origin: .drag
+        ) != nil
+    }
+
+    // MARK: 拖入边缘自动滚动
+
+    private func updateDropAutoscroll(at point: CGPoint) {
+        dropPoint = point
+        guard let scrollView = enclosingScrollView else { return }
+        let visible = scrollView.documentVisibleRect
+        let outside = point.y < visible.minY
+            || point.y > visible.maxY
+            || point.x < visible.minX
+            || point.x > visible.maxX
+        if outside {
+            startDropScrollTimer()
+        } else {
+            stopDropScrollTimer()
+        }
+    }
+
+    private func startDropScrollTimer() {
+        guard dropScrollTimer == nil else { return }
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            self?.performDropScrollTick()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        dropScrollTimer = timer
+    }
+
+    private func stopDropScrollTimer() {
+        dropScrollTimer?.invalidate()
+        dropScrollTimer = nil
+    }
+
+    private func performDropScrollTick() {
+        guard let scrollView = enclosingScrollView else {
+            stopDropScrollTimer()
+            return
+        }
+        let clipView = scrollView.contentView
+        let visible = clipView.bounds
+        let edge: CGFloat = 16
+        var delta = CGPoint.zero
+        if dropPoint.y < visible.minY { delta.y = -edge }
+        else if dropPoint.y > visible.maxY { delta.y = edge }
+        if dropPoint.x < visible.minX { delta.x = -edge }
+        else if dropPoint.x > visible.maxX { delta.x = edge }
+        guard delta != .zero else {
+            stopDropScrollTimer()
+            return
+        }
+
+        let maxX = max(0, frame.width - visible.width)
+        let maxY = max(0, frame.height - visible.height)
+        var origin = visible.origin
+        origin.x = min(max(0, origin.x + delta.x), maxX)
+        origin.y = min(max(0, origin.y + delta.y), maxY)
+        guard origin != visible.origin else { return }
+
+        clipView.scroll(to: origin)
+        scrollView.reflectScrolledClipView(clipView)
+        // 滚动后同一屏幕点对应新的文本偏移，刷新落点指示。
+        dropInsertionOffset = layoutEngine.index(at: dropPoint)
+        needsDisplay = true
     }
 
     // MARK: - 多光标命令
