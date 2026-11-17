@@ -1,0 +1,101 @@
+name: PR Tests
+
+# PR 门禁：LineaTextUI 包测试 + App XCTest。
+# 发布用 tag CI 仍在 ci.yml，本工作流不上传 DMG、不做签名。
+
+on:
+  pull_request:
+    paths:
+      - 'Sources/**'
+      - 'Tests/**'
+      - 'Packages/**'
+      - 'Resources/**'
+      - 'project.yml'
+      - '.github/workflows/test-ci.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  packages:
+    name: LineaTextUI tests
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Select Xcode 26
+        shell: bash
+        run: |
+          set -euo pipefail
+          XCODE_APP="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | grep -viE 'beta|rc' | tail -n 1)"
+          test -n "$XCODE_APP"
+          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+          xcodebuild -version
+
+      - name: Run LineaTextUI tests
+        shell: bash
+        run: swift test --package-path Packages/LineaTextUI
+
+  app:
+    name: App tests
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Select Xcode 26
+        shell: bash
+        run: |
+          set -euo pipefail
+          XCODE_APP="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | grep -viE 'beta|rc' | tail -n 1)"
+          test -n "$XCODE_APP"
+          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+          xcodebuild -version
+          test "$(uname -m)" = "arm64"
+
+      - name: Install XcodeGen
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            HOMEBREW_NO_AUTO_UPDATE=1 brew install xcodegen
+          fi
+          xcodegen --version
+
+      - name: Generate Xcode project
+        shell: bash
+        run: xcodegen generate
+
+      - name: Run App tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild test \
+            -project Linea.xcodeproj \
+            -scheme Linea \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath build \
+            -parallel-testing-enabled NO \
+            -resultBundlePath TestResults.xcresult \
+            CODE_SIGN_IDENTITY=- \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM= \
+            CODE_SIGNING_REQUIRED=NO
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: Linea-PR-TestResults
+          path: TestResults.xcresult
+          if-no-files-found: warn
+          retention-days: 7

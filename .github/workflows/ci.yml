@@ -54,17 +54,6 @@ jobs:
           set -euo pipefail
           xcodegen generate
 
-      - name: Resolve Swift packages
-        shell: bash
-        run: |
-          set -euo pipefail
-          xcodebuild \
-            -project Linea.xcodeproj \
-            -scheme Linea \
-            -resolvePackageDependencies \
-            -derivedDataPath build \
-            -clonedSourcePackagesDirPath "$PWD/build/SourcePackages"
-
       - name: Run tests
         shell: bash
         run: |

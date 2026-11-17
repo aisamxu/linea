@@ -1,0 +1,38 @@
+name: Core Tests
+
+# LineaCore 只依赖 Foundation，用 Linux 容器跑测试，给 PR 提供低成本快速反馈。
+# LineaTextUI 依赖 AppKit，与 App 测试一起在 test-ci.yml 的 macOS runner 上运行。
+
+on:
+  pull_request:
+    paths:
+      - 'Packages/LineaCore/**'
+      - '.github/workflows/core-ci.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'Packages/LineaCore/**'
+      - '.github/workflows/core-ci.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: core-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: LineaCore tests (Linux)
+    runs-on: ubuntu-latest
+    container: swift:6.0
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Run LineaCore tests
+        shell: bash
+        run: swift test --package-path Packages/LineaCore
