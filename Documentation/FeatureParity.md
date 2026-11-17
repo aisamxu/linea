@@ -180,7 +180,44 @@
 - 新引擎/布局层不得在初始化、静态变量或启动路径读写真实 `~/Library/Application Support/Linea`。
 - 保留 0700/0600 权限断言与草稿路径穿越防护测试。
 
-## 15. 编辑命令覆盖矩阵（Phase 3）
+## 15. Phase 5 自动化覆盖状态（2026-11-17）
+
+上表的“对拍”列用于**人工实机验收**，由发布前在 App 中逐项勾选；本节的自动化覆盖不能替代它，
+但可用于缩小人工验收范围、定位回归。
+
+### 已由自动化测试覆盖
+
+| 领域 | 覆盖项 | 测试位置 |
+| --- | --- | --- |
+| 文本/行模型 | 编辑、删除、批量应用、LF/CR/CRLF/U+2028/U+2029、CJK/emoji/ZWJ/surrogate、差分与 fuzz | `Packages/LineaCore/Tests`（125 个，全部通过） |
+| 撤销/事务 | 一次动作一步、500 光标一步撤销、合并规则、冻结边界、历史上限 | `Packages/LineaCore/Tests` |
+| 选区 | clamp、重叠合并、主选区、批量映射、adjuster 10 个用例移植 | `Packages/LineaCore/Tests` |
+| 多光标命令 | M1–M3、M7–M11（词范围、数量上限、行边界、CR/U+2028） | `Packages/LineaCore/Tests/MultiCursorCommandsTests.swift` |
+| 多光标交互 | M4–M6（⌘+点击、⇧⌃+点击、Esc） | `LineaTextViewEditingTests.swift` |
+| 剪贴板 | C1–C3（纯文本粘贴、多选区换行连接、Cut 一个事务） | `LineaTextViewEditingTests.swift` |
+| 拖放 | T1–T3、T5（内部移动、外部插入、文件 URL 拒绝、统一纯文本） | `LineaTextViewDragAndDropTests.swift`（9 个） |
+| 查找替换 | P1、P4–P6（client 读写、Replace All 一个历史条目、选区映射） | `LineaTextViewFinderTests.swift`（8 个） |
+| 输入法 | I1、I2、I5、I6（marked text、主选区组合、提交边界、组合中 Esc/⌘Z） | `LineaTextViewInputMethodTests.swift`（15 个） |
+| 无障碍 | X1、X3（属性读取与通知） | `LineaTextViewAccessibilityTests.swift`（8 个） |
+| 布局几何 | 行高、命中测试、可见行、长行分块、行号宽度 | `CoreTextLayoutEngineTests`、`LongLineLayoutTests`、`TextGeometryTests` |
+| App 集成 | 初始加载、越界 clamp、两次输入两步撤销、冻结、重载清历史、视口尾部、500 光标结构护栏 | `Tests/LineaTests`（已改写，待 CI 首次运行） |
+
+总计：LineaCore 125 个、LineaTextUI 118 个、App XCTest 21 个（11 集成 + 5 视口 + 5 性能护栏）。
+LineaCore/LineaTextUI 已在本机全部通过；App XCTest 因本机只有 CommandLineTools、没有 Xcode，
+无法本地执行，由 `.github/workflows/test-ci.yml` 在 macOS runner 上运行。
+
+### 仍需人工实机验收
+
+- **窗口/标签/文件/会话**：W1–W10、F1–F7、D1–D4、S1–S5。这些逻辑未改动，但引擎切换后需确认保存、草稿、恢复、外部修改提示的实际流程。
+- **外观**：A1–A9。字体、行高、tab、行号 gutter、浅色/深色外观需要目视对比 1.0.2。
+- **查找栏与菜单**：P2–P3、C4。find bar 位置/动画、内容变暗、右键菜单项需要目视确认。
+- **真实输入路径**：I1–I4。中文/日文/韩文输入法、候选窗定位、听写、emoji picker 必须实机操作。
+- **VoiceOver**：X1–X3。朗读、按行/字符导航、选择、撤销、查找。
+- **真实拖拽手势**：T1、T2。跨应用拖拽与内部拖拽的鼠标手感、插入光标指示。
+- **可接受差异**：V1–V3 由人工确认签字（U+2028 行号、RTF 拖入、RTL Option+拖拽）。
+- **快捷键实测**：⌘D/⌃⌘G/⇧⌘L/⌘+点击/Esc/⌘Z 等在真实键盘事件下的分发（单元测试直接调用命令层）。
+
+## 16. 编辑命令覆盖矩阵（Phase 3）
 
 `LineaTextView` 通过 `NSStandardKeyBindingResponding`、`NSTextInputClient` 与 responder chain 接管下表命令。
 未列出的命令一律视为“无入口、不实现”，避免键盘绑定静默失效却无人知晓；实现位于
