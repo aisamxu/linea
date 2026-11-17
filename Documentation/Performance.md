@@ -167,7 +167,7 @@ Debug 测试只保留数量级护栏（单/60 光标 < 300 ms、500 光标 < 2 s
 | --- | ---: | ---: |
 | 10 MB 文档构建全文字符串 + 一次搜索 | 23.6 ms | 主线程无 > 100 ms 卡顿 |
 
-`NSTextFinderClient.string` 被查找栏读取时按需构建全文缓存，首次构建之后随编辑增量维护；
+查找栏与 `NSTextFinderClient.string` 读取全文缓存时按需构建，首次构建之后随编辑增量维护；
 本次耗时同时包含 `PieceTreeBuffer` 按 UTF-16 拼接全文与 NSString 搜索，仍低于 100 ms 门槛。
 Debug 测试只保留 3 s 数量级护栏。
 

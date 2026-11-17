@@ -73,13 +73,15 @@
 
 | 编号 | 行为 | 1.0.2 实现 | 要求 | 对拍 |
 | --- | --- | --- | --- | --- |
-| P1 | 查找栏 | 系统 `NSTextFinder` find bar | ✅ | ☐ |
-| P2 | 快捷键 | ⌘F / ⌥⌘F / ⌘G / ⇧⌘G | ✅ | ☐ |
-| P3 | 增量搜索 | 增量查找；匹配由视图自绘系统高亮，并配合本地快速扫描消除 off-screen 匹配约 1 秒的发布延迟 | ✅ | ☐ |
+| P1 | 查找栏 | 1.0.2 用系统 `NSTextFinder`；1.1.0 改为自建 `FindBarView`，不再依赖私有 find bar | ✅（重写） | ☐ |
+| P2 | 快捷键 | ⌘F / ⌥⌘F / ⌘G / ⇧⌘G；搜索框内 Return/⇧Return 下一个/上一个，Esc 收起 | ✅ | ☐ |
+| P3 | 增量搜索 | 每次键入立即调用本地 `FindMatchScanner` 重算并自绘高亮，无发布延迟 | ✅ | ☐ |
 | P4 | 多光标 | 打开查找/替换前折叠为单光标 | ✅ | ☐ |
-| P5 | 替换 | 走编辑事务；Replace All 合并为一个撤销条目 | ✅（新引擎目标） | ☐ |
-| P6 | 高亮 | 视图读取 `incrementalMatchRanges`，用 `NSTextFinder.drawIncrementalMatchHighlight` 自绘；不创建遮罩子视图 | ✅ | ☐ |
-| P7 | 全部匹配转多光标 | Find > Select All Matches（⌥⌘G）把全部查找结果写成多选区，可直接编辑 | ✅（新增） | ☐ |
+| P5 | 替换 | 走编辑事务；Replace All 合并为一个撤销条目，并保持替换前的滚动位置与行号完整 | ✅（新引擎目标） | ☐ |
+| P6 | 高亮 | 视图直接使用扫描出的匹配范围自绘黄色高亮；不创建遮罩子视图 | ✅ | ☐ |
+| P7 | 全部匹配转多光标 | Find > Select All Matches（⌥⌘G）或查找栏 S*，把全部查找结果写成多选区，可直接编辑 | ✅（新增） | ☐ |
+| P8 | 自动预填 | 有单行选区时 ⌘F/⌥⌘F 直接把它填入搜索框；跨行选区不预填 | ✅（新增） | ☐ |
+| P9 | 搜索选项 | Aa 区分大小写；wd 全字匹配（两侧不能是字母/数字/下划线）；可组合 | ✅（新增） | ☐ |
 
 ## 7. 多光标
 
@@ -91,7 +93,7 @@
 | M4 | ⌘+点击 | 加/移除光标；再点已有光标即移除，至少保留一个 | ✅ | ☐ |
 | M5 | ⇧⌃+点击 | 追加光标（1.0.2 原生多选手势） | ✅ | ☐ |
 | M6 | Esc | 折叠为单光标；输入法组合中不折叠 | ✅ | ☐ |
-| M7 | 上限 | 10,000 个选区；超出时 beep + “Too many selections” 提示，不改变选区 | ✅ | ☐ |
+| M7 | 上限 | 1.0.2 上限 10,000 个选区；1.1.0 起取消数量上限，整篇文档逐行加光标不受限 | 已取消限制 | ☐ |
 | M8 | 无匹配 | 无可选内容时 beep，不改变选区 | ✅ | ☐ |
 | M9 | 一次按键 | 所有光标一次事务、一次撤销 | ✅ | ☐ |
 | M10 | 行边界 | LF/CR/CRLF/U+2028/U+2029 统一为行终止符 | ✅（新引擎统一） | ☐ |
@@ -191,20 +193,20 @@
 
 | 领域 | 覆盖项 | 测试位置 |
 | --- | --- | --- |
-| 文本/行模型 | 编辑、删除、批量应用、LF/CR/CRLF/U+2028/U+2029、CJK/emoji/ZWJ/surrogate、差分与 fuzz | `Packages/LineaCore/Tests`（126 个，全部通过） |
+| 文本/行模型 | 编辑、删除、批量应用、LF/CR/CRLF/U+2028/U+2029、CJK/emoji/ZWJ/surrogate、差分与 fuzz | `Packages/LineaCore/Tests`（125 个，全部通过） |
 | 撤销/事务 | 一次动作一步、500 光标一步撤销、合并规则、冻结边界、历史上限 | `Packages/LineaCore/Tests` |
 | 选区 | clamp、重叠合并、主选区、批量映射、adjuster 10 个用例移植 | `Packages/LineaCore/Tests` |
-| 多光标命令 | M1–M3、M7–M11（词范围、数量上限、行边界、CR/U+2028） | `Packages/LineaCore/Tests/MultiCursorCommandsTests.swift` |
+| 多光标命令 | M1–M3、M7–M11（词范围、取消数量上限、行边界、CR/U+2028） | `Packages/LineaCore/Tests/MultiCursorCommandsTests.swift` |
 | 多光标交互 | M4–M6、M12（⌘+点击、⇧⌃+点击、Esc、⌥+点击） | `LineaTextViewEditingTests.swift` |
 | 剪贴板 | C1–C3（纯文本粘贴、多选区换行连接、Cut 一个事务） | `LineaTextViewEditingTests.swift` |
 | 拖放 | T1–T3、T5（内部移动、外部插入、文件 URL 拒绝、统一纯文本） | `LineaTextViewDragAndDropTests.swift`（9 个） |
-| 查找替换 | P1、P4–P7（client 读写、Replace All 一个历史条目、选区映射、快速扫描） | `LineaTextViewFinderTests.swift`、`FindMatchScannerTests.swift` |
+| 查找替换 | P1、P4–P9（自建查找栏、Replace All 一个历史条目、选区映射、快速扫描、Aa/wd） | `LineaTextViewFinderTests.swift`、`FindMatchScannerTests.swift`（9 个） |
 | 输入法 | I1、I2、I5、I6（marked text、主选区组合、提交边界、组合中 Esc/⌘Z） | `LineaTextViewInputMethodTests.swift`（15 个） |
 | 无障碍 | X1、X3（属性读取与通知） | `LineaTextViewAccessibilityTests.swift`（8 个） |
 | 布局几何 | 行高、命中测试、可见行、长行分块、行号宽度 | `CoreTextLayoutEngineTests`、`LongLineLayoutTests`、`TextGeometryTests` |
 | App 集成 | 初始加载、越界 clamp、两次输入两步撤销、冻结、重载清历史、视口尾部、500 光标结构护栏 | `Tests/LineaTests`（已改写，待 CI 首次运行） |
 
-总计：LineaCore 126 个、LineaTextUI 129 个、App XCTest 21 个（11 集成 + 5 视口 + 5 性能护栏）。
+总计：LineaCore 125 个、LineaTextUI 133 个、App XCTest 21 个（11 集成 + 5 视口 + 5 性能护栏）。
 LineaCore/LineaTextUI 已在本机全部通过；App XCTest 因本机只有 CommandLineTools、没有 Xcode，
 无法本地执行，由 `.github/workflows/test-ci.yml` 在 macOS runner 上运行。
 
@@ -212,7 +214,7 @@ LineaCore/LineaTextUI 已在本机全部通过；App XCTest 因本机只有 Comm
 
 - **窗口/标签/文件/会话**：W1–W10、F1–F7、D1–D4、S1–S5。这些逻辑未改动，但引擎切换后需确认保存、草稿、恢复、外部修改提示的实际流程。
 - **外观**：A1–A9。字体、行高、tab、行号 gutter、浅色/深色外观需要目视对比 1.0.2。
-- **查找栏与菜单**：P2–P3、P7、C4。find bar 位置/动画、自绘增量高亮、Select All Matches、右键菜单项需要目视确认。
+- **查找栏与菜单**：P2–P3、P7–P9、C4。查找栏外观与对齐、Aa/wd 开关、S*/R→/R* 按钮、Replace All 后滚动位置与行号、右键菜单项需要目视确认。
 - **真实输入路径**：I1–I4。中文/日文/韩文输入法、候选窗定位、听写、emoji picker 必须实机操作。
 - **VoiceOver**：X1–X3。朗读、按行/字符导航、选择、撤销、查找。
 - **真实拖拽手势**：T1、T2。跨应用拖拽与内部拖拽的鼠标手感、插入光标指示。
