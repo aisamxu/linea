@@ -9,7 +9,12 @@ import LineaCore
 ///   拖拽与光标闪烁等临时 UI 状态。
 /// - 所有编辑最终都经过引擎事务：一次按键、粘贴、多光标输入只产生一个历史条目。
 /// - 光标与选区在同一次 `draw` 中绘制，不创建逐光标子视图或 layer。
-public final class LineaTextView: NSView, NSTextInputClient, TextSurface {
+public final class LineaTextView:
+    NSView,
+    NSTextInputClient,
+    NSTextFinderClient,
+    TextSurface
+{
     public let engine: EditorEngine
     public let layoutEngine: CoreTextLayoutEngine
 
@@ -73,6 +78,8 @@ public final class LineaTextView: NSView, NSTextInputClient, TextSurface {
 
     private var renderer: TextRenderer
     private var clipObservation: NSObjectProtocol?
+    /// 上一次通知 AX 的可见首行，滚动时只在跨行时发 layoutChanged。
+    private var lastAccessibilityVisibleLine = -1
     private var previousOnChange: ((EditorChange) -> Void)?
 
     private var caretBlinkTimer: Timer?
@@ -206,6 +213,9 @@ public final class LineaTextView: NSView, NSTextInputClient, TextSurface {
         if let primary = engine.selections.last {
             scrollRangeToVisible(offset: primary.insertionOffset)
         }
+
+        // 一次编辑只发一次值变化通知。
+        NSAccessibility.post(element: self, notification: .valueChanged)
     }
 
     public override func draw(_ dirtyRect: CGRect) {
@@ -1240,6 +1250,285 @@ public final class LineaTextView: NSView, NSTextInputClient, TextSurface {
         false
     }
 
+    // MARK: - NSTextFinderClient
+
+    // Replace All 会把多个替换从后往前逐个回调；这里先收集，在
+    // didReplaceCharacters 一次性升序应用，保证一个撤销条目且不逐个重排。
+    private var pendingFinderEdits: [TextEdit] = []
+
+    public var string: String {
+        engine.text
+    }
+
+    public var isSelectable: Bool {
+        true
+    }
+
+    public var allowsMultipleSelection: Bool {
+        true
+    }
+
+    public var firstSelectedRange: NSRange {
+        engine.primarySelection.range
+    }
+
+    public var selectedRanges: [NSValue] {
+        get { engine.selections.map { NSValue(range: $0.range) } }
+        set {
+            let updated = newValue
+                .map { TextSelection(range: clampedDocumentRange($0.rangeValue)) }
+                .sorted { $0.range.location < $1.range.location }
+            if !updated.isEmpty {
+                selections = Array(updated.suffix(10_000))
+            }
+        }
+    }
+
+    public var visibleCharacterRanges: [NSValue] {
+        let visibleRect = enclosingScrollView?.documentVisibleRect ?? bounds
+        let lines = layoutEngine.lines(in: visibleRect)
+        guard !lines.isEmpty else { return [] }
+        let first = engine.lineRange(at: lines.lowerBound)
+        let last = engine.lineRange(at: lines.upperBound - 1)
+        return [NSValue(range: NSRange(
+            location: first.location,
+            length: last.location + last.length - first.location
+        ))]
+    }
+
+    public func stringLength() -> Int {
+        engine.length
+    }
+
+    public func substring(with range: NSRange) -> String {
+        guard isValidDocumentRange(range) else { return "" }
+        return engine.substring(in: range)
+    }
+
+    public func contentView(
+        at index: Int,
+        effectiveRange: NSRangePointer
+    ) -> NSView? {
+        effectiveRange.pointee = NSRange(
+            location: 0,
+            length: engine.length
+        )
+        return self
+    }
+
+    public func rects(forCharacterRange range: NSRange) -> [NSValue]? {
+        guard isValidDocumentRange(range) else { return nil }
+        if range.length == 0 {
+            return [NSValue(rect: layoutEngine.caretRect(for: range.location))]
+        }
+        return layoutEngine.rects(for: range).map { NSValue(rect: $0) }
+    }
+
+    public func shouldReplaceCharacters(
+        inRanges ranges: [NSValue],
+        with strings: [String]
+    ) -> Bool {
+        guard engine.isEditable, ranges.count == strings.count else {
+            return false
+        }
+        return ranges.allSatisfy { isValidDocumentRange($0.rangeValue) }
+    }
+
+    /// 收集单个替换；NSTextFinder 的 Replace All 会连续调用多次。
+    public func replaceCharacters(in range: NSRange, with string: String) {
+        guard engine.isEditable, isValidDocumentRange(range) else { return }
+        // 查找替换前提交组合，避免 marked text 与替换范围交叉。
+        commitPendingInput()
+        pendingFinderEdits.append(TextEdit(range: range, replacement: string))
+    }
+
+    /// 一次应用本轮全部替换；多个匹配只产生一个历史条目。
+    public func didReplaceCharacters() {
+        guard !pendingFinderEdits.isEmpty else { return }
+        let edits = pendingFinderEdits.sorted {
+            $0.range.location < $1.range.location
+        }
+        pendingFinderEdits.removeAll(keepingCapacity: true)
+        engine.apply(edits: edits, origin: .replaceAll)
+    }
+
+    /// 查找栏出现/文本将变前由控制器调用，避免增量查找缓存过期。
+    public func noteFindStringWillChange(_ textFinder: NSTextFinder) {
+        textFinder.noteClientStringWillChange()
+    }
+
+    // MARK: - 无障碍
+
+    // 视图是单一 AX 元素，不创建隐藏 NSTextView；文本、选区与行号全部从引擎读取。
+    // 参数化属性（按范围取字符串/矩形、按行/索引取范围）由下面实现的
+    // accessibility* 方法直接暴露，现代 NSAccessibility 协议会自动发现。
+
+    public override func isAccessibilityElement() -> Bool {
+        true
+    }
+
+    public override func accessibilityRole() -> NSAccessibility.Role? {
+        .textArea
+    }
+
+    public override func accessibilityValue() -> Any? {
+        engine.text
+    }
+
+    public override func accessibilitySelectedText() -> String? {
+        let text = selectedText
+        return text.isEmpty ? nil : text
+    }
+
+    public override func accessibilitySelectedTextRange() -> NSRange {
+        engine.primarySelection.range
+    }
+
+    public override func accessibilitySelectedTextRanges() -> [NSValue]? {
+        // AX 期望按文档顺序给出所有选区；主选区仍是最后一个。
+        engine.selections
+            .map(\.range)
+            .sorted { $0.location < $1.location }
+            .map { NSValue(range: $0) }
+    }
+
+    public override func setAccessibilitySelectedTextRange(_ range: NSRange) {
+        let clamped = clampedDocumentRange(range)
+        selections = [TextSelection(range: clamped)]
+    }
+
+    public override func setAccessibilitySelectedTextRanges(_ ranges: [NSValue]?) {
+        guard let ranges, !ranges.isEmpty else { return }
+        let updated = ranges
+            .map { TextSelection(range: clampedDocumentRange($0.rangeValue)) }
+            .sorted { $0.range.location < $1.range.location }
+        selections = Array(updated.suffix(10_000))
+    }
+
+    public override func accessibilityNumberOfCharacters() -> Int {
+        engine.length
+    }
+
+    /// AX 行号从 0 开始；引擎行号从 1 开始。
+    public override func accessibilityInsertionPointLineNumber() -> Int {
+        engine.lineNumber(at: engine.primarySelection.insertionOffset) - 1
+    }
+
+    public override func accessibilityVisibleCharacterRange() -> NSRange {
+        let visibleRect = enclosingScrollView?.documentVisibleRect ?? bounds
+        let lines = layoutEngine.lines(in: visibleRect)
+        guard !lines.isEmpty else {
+            let caret = min(engine.primarySelection.range.location, engine.length)
+            return NSRange(location: caret, length: 0)
+        }
+        let first = engine.lineRange(at: lines.lowerBound)
+        let last = engine.lineRange(at: lines.upperBound - 1)
+        let end = min(engine.length, last.location + last.length)
+        return NSRange(
+            location: first.location,
+            length: max(0, end - first.location)
+        )
+    }
+
+    public override func accessibilityString(for range: NSRange) -> String? {
+        guard isValidDocumentRange(range) else { return nil }
+        return engine.substring(in: range)
+    }
+
+    /// AX 行号从 0 开始，返回该行的完整范围（含行终止符）。
+    public override func accessibilityRange(forLine line: Int) -> NSRange {
+        let clampedLine = min(max(line, 0), engine.lineCount - 1) + 1
+        return engine.lineRange(at: clampedLine)
+    }
+
+    public override func accessibilityLine(for index: Int) -> Int {
+        let clamped = min(max(0, index), engine.length)
+        return engine.lineNumber(at: clamped) - 1
+    }
+
+    public override func accessibilityFrame(for range: NSRange) -> NSRect {
+        guard let window else { return .zero }
+        let clamped = clampedDocumentRange(range)
+        let rect: CGRect
+        if clamped.length == 0 {
+            rect = layoutEngine.caretRect(for: clamped.location)
+        } else {
+            let rects = layoutEngine.rects(for: clamped)
+            guard let first = rects.first else { return .zero }
+            rect = rects.dropFirst().reduce(first) { $0.union($1) }
+        }
+        let windowRect = convert(rect, to: nil)
+        return window.convertToScreen(windowRect)
+    }
+
+    /// 屏幕坐标转组合字符范围，供 VoiceOver 点击/缩放定位。
+    public override func accessibilityRange(for position: NSPoint) -> NSRange {
+        guard let window else {
+            return NSRange(location: 0, length: 0)
+        }
+        let windowPoint = window.convertPoint(fromScreen: position)
+        let viewPoint = convert(windowPoint, from: nil)
+        let index = layoutEngine.index(at: viewPoint)
+        return composedCharacterRange(at: index)
+    }
+
+    public override func accessibilityRange(for index: Int) -> NSRange {
+        composedCharacterRange(at: index)
+    }
+
+    public override func accessibilityAttributedString(
+        for range: NSRange
+    ) -> NSAttributedString? {
+        guard let text = accessibilityString(for: range) else { return nil }
+        return NSAttributedString(
+            string: text,
+            attributes: [.font: theme.font]
+        )
+    }
+
+    /// 文档范围夹取；AX 客户端传来的越界范围不崩溃。
+    private func clampedDocumentRange(_ range: NSRange) -> NSRange {
+        guard range.location != NSNotFound, range.location >= 0, range.length >= 0 else {
+            return NSRange(location: 0, length: 0)
+        }
+        let location = min(range.location, engine.length)
+        let length = min(range.length, engine.length - location)
+        return NSRange(location: location, length: length)
+    }
+
+    private func isValidDocumentRange(_ range: NSRange) -> Bool {
+        range.location != NSNotFound
+            && range.location >= 0
+            && range.length >= 0
+            && range.location <= engine.length
+            && range.length <= engine.length - range.location
+    }
+
+    /// 返回 index 所在组合字符（grapheme）的文档范围。
+    private func composedCharacterRange(at index: Int) -> NSRange {
+        guard engine.length > 0 else {
+            return NSRange(location: 0, length: 0)
+        }
+        let clamped = min(max(0, index), engine.length)
+        let line = engine.lineNumber(at: clamped)
+        let contentRange = engine.lineContentRange(at: line)
+        let content = engine.substring(in: contentRange) as NSString
+        guard content.length > 0 else {
+            return NSRange(location: contentRange.location, length: 0)
+        }
+        let local = min(
+            max(0, clamped - contentRange.location),
+            content.length
+        )
+        // 文档末尾没有“下一个字符”，取最后一个 grapheme。
+        let probe = local == content.length ? content.length - 1 : local
+        let range = content.rangeOfComposedCharacterSequence(at: probe)
+        return NSRange(
+            location: contentRange.location + range.location,
+            length: range.length
+        )
+    }
+
     // MARK: - TextSurface
 
     public func setSelections(_ selections: [TextSelection]) {
@@ -1273,6 +1562,7 @@ public final class LineaTextView: NSView, NSTextInputClient, TextSurface {
             // 只滚主光标，避免多光标编辑时视图跟着最后一个选区乱跳。
             scrollRangeToVisible(offset: primary.insertionOffset)
         }
+        NSAccessibility.post(element: self, notification: .selectedTextChanged)
     }
 
     private func resetCaretBlink() {
@@ -1442,8 +1732,22 @@ public final class LineaTextView: NSView, NSTextInputClient, TextSurface {
             queue: .main
         ) { [weak self] _ in
             self?.syncViewportWidth()
+            self?.notifyAccessibilityIfVisibleLinesChanged()
         }
         syncViewportWidth()
+        lastAccessibilityVisibleLine = currentAccessibilityVisibleLine
+    }
+
+    private var currentAccessibilityVisibleLine: Int {
+        let visibleRect = enclosingScrollView?.documentVisibleRect ?? bounds
+        return layoutEngine.lines(in: visibleRect).lowerBound
+    }
+
+    private func notifyAccessibilityIfVisibleLinesChanged() {
+        let line = currentAccessibilityVisibleLine
+        guard line != lastAccessibilityVisibleLine else { return }
+        lastAccessibilityVisibleLine = line
+        NSAccessibility.post(element: self, notification: .layoutChanged)
     }
 
     private func syncViewportWidth() {
