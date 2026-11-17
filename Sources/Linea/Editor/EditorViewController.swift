@@ -30,6 +30,11 @@ final class EditorViewController: NSViewController {
     /// 退出写会话期间临时关闭编辑能力，防止快照之后的新修改丢失。
     private(set) var isEditingEnabled = true
 
+    /// 拖入文件时由窗口层打开为新标签；视图只识别文件，不直接依赖文档层。
+    var onOpenFileURLs: (([URL]) -> Void)? {
+        didSet { textView.onOpenFileURLs = onOpenFileURLs }
+    }
+
     /// 保存、会话快照、切换标签前都通过它取文本；会先提交输入法组合。
     var currentText: String {
         textView.prepareForSnapshot()

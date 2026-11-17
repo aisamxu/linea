@@ -42,6 +42,8 @@ public final class LineaTextView:
     /// Esc（`cancelOperation:`）先交给外部处理；返回 true 表示已消费，
     /// 视图不再折叠多光标。查找栏打开时用它优先收起查找栏。
     public var onCancelOperation: (() -> Bool)?
+    /// 拖入纯文本文件时交给宿主打开为新标签；视图自身不依赖 App 文档层。
+    public var onOpenFileURLs: (([URL]) -> Void)?
 
     /// 光标闪烁状态。视图成为第一响应者后由 Timer 驱动；测试可手动设置。
     public var isCaretVisible = false {
@@ -147,8 +149,8 @@ public final class LineaTextView:
         layerContentsRedrawPolicy = .onSetNeedsDisplay
         autoresizingMask = []
 
-        // 只声明纯文本：文件 URL 等类型不会触发拖入。
-        registerForDraggedTypes([.string])
+        // 字符串用于插入正文；文件 URL 交给宿主按文件打开。
+        registerForDraggedTypes([.string, .fileURL])
 
         // 视图接管引擎回调：先更新布局/几何，再转发给外部控制器。
         engine.onChange = { [weak self] change in
@@ -1253,13 +1255,23 @@ public final class LineaTextView:
     public override func prepareForDragOperation(
         _ sender: NSDraggingInfo
     ) -> Bool {
-        dropText(from: sender) != nil
+        !droppedFileURLs(from: sender).isEmpty || dropText(from: sender) != nil
     }
 
     public override func performDragOperation(
         _ sender: NSDraggingInfo
     ) -> Bool {
         defer { clearDropTarget() }
+
+        // 文件优先：Finder 拖文件时粘贴板也可能带路径字符串，
+        // 不能在编辑区里把路径当正文插入。
+        let fileURLs = droppedFileURLs(from: sender)
+        if !fileURLs.isEmpty {
+            guard let onOpenFileURLs else { return false }
+            onOpenFileURLs(fileURLs)
+            return true
+        }
+
         guard let text = dropText(from: sender), !text.isEmpty else {
             return false
         }
@@ -1296,7 +1308,15 @@ public final class LineaTextView:
         ) != nil
     }
 
-    /// 只接受纯文本拖入：文件 URL 一律拒绝（与 1.0.2 一致，不支持拖入打开）。
+    /// 拖入的纯文本文件；未注入打开回调时视为不可接收。
+    private func droppedFileURLs(from info: NSDraggingInfo) -> [URL] {
+        guard onOpenFileURLs != nil, engine.isEditable, !engine.isComposing else {
+            return []
+        }
+        return TextFileDrop.fileURLs(from: info.draggingPasteboard)
+    }
+
+    /// 只接受纯文本插入；文件 URL 走 `droppedFileURLs`，不把路径当正文。
     private func dropText(from info: NSDraggingInfo) -> String? {
         guard engine.isEditable, !engine.isComposing else { return nil }
         let pasteboard = info.draggingPasteboard
@@ -1309,6 +1329,11 @@ public final class LineaTextView:
     private func updateDropTarget(
         _ sender: NSDraggingInfo
     ) -> NSDragOperation {
+        // 文件拖入表示“打开为新标签”，不显示文本落点指示。
+        if !droppedFileURLs(from: sender).isEmpty {
+            clearDropTarget()
+            return .copy
+        }
         guard dropText(from: sender) != nil else {
             clearDropTarget()
             return []
