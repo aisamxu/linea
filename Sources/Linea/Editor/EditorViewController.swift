@@ -177,10 +177,11 @@ final class EditorViewController: NSViewController {
     }
 
     /// 窗口尺寸变化后同步视口宽度；布局引擎按它决定横向滚动范围。
+    ///
+    /// 可视宽度由文本视图按「clip view 宽度减行号覆盖区」计算，
+    /// 不能直接用 `scrollView.contentSize.width`，否则空文档也会多出一条横向滚动条。
     private func syncViewport() {
-        let width = scrollView.contentSize.width
-        guard width > 0 else { return }
-        textView.setViewportWidth(width)
+        textView.syncViewportWidthFromScrollView()
         textView.updateDocumentFrame()
     }
 
@@ -271,25 +272,18 @@ final class EditorViewController: NSViewController {
             )
         }
         let origin = scrollView.contentView.bounds.origin
-        return CGPoint(x: max(0, origin.x), y: max(0, origin.y))
+        // x 使用内容坐标，排除行号 ruler 覆盖在 clip view 上的视觉偏移。
+        return CGPoint(
+            x: textView.horizontalScrollOffset,
+            y: max(0, origin.y)
+        )
     }
 
     private func applyPendingScrollIfNeeded() {
         guard let target = pendingScrollOrigin, view.window != nil else { return }
 
         syncViewport()
-        let clipView = scrollView.contentView
-        let visibleSize = clipView.bounds.size
-        let contentSize = textView.frame.size
-
-        let maxX = max(0, contentSize.width - visibleSize.width)
-        let maxY = max(0, contentSize.height - visibleSize.height)
-        let origin = CGPoint(
-            x: min(max(0, target.x), maxX),
-            y: min(max(0, target.y), maxY)
-        )
-        clipView.scroll(to: origin)
-        scrollView.reflectScrolledClipView(clipView)
+        textView.applyScrollOrigin(target)
         pendingScrollOrigin = nil
     }
 
@@ -541,15 +535,7 @@ final class EditorViewController: NSViewController {
     /// 把滚动位置恢复到 `origin`，并夹取到当前文档范围内。
     private func restoreScrollOrigin(_ origin: CGPoint) {
         syncViewport()
-        let clipView = scrollView.contentView
-        let visibleSize = clipView.bounds.size
-        let contentSize = textView.frame.size
-        let target = CGPoint(
-            x: min(max(0, origin.x), max(0, contentSize.width - visibleSize.width)),
-            y: min(max(0, origin.y), max(0, contentSize.height - visibleSize.height))
-        )
-        clipView.scroll(to: target)
-        scrollView.reflectScrolledClipView(clipView)
+        textView.applyScrollOrigin(origin)
     }
 
     // MARK: - 多光标

@@ -595,12 +595,11 @@ public final class EditorEngine {
 
     private static func clampedMarkedRange(_ range: NSRange, in text: String) -> NSRange {
         let length = text.utf16.count
+        // 输入法没有给出替换范围时，组合从文档末尾开始；其余非法值统一归零。
         guard range.location != NSNotFound else {
             return NSRange(location: length, length: 0)
         }
-        let location = min(max(0, range.location), length)
-        let safeLength = min(max(0, range.length), length - location)
-        return NSRange(location: location, length: safeLength)
+        return range.clampedToTextLength(length)
     }
 
     // MARK: - 全文缓存

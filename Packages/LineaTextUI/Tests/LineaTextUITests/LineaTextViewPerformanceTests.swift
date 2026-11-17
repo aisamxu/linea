@@ -224,7 +224,7 @@ struct LineaTextViewPerformanceTests {
         let view = makeView(text, selections: [.caret(at: 0)])
 
         let start = CFAbsoluteTimeGetCurrent()
-        let full = view.string
+        let full = view.engine.text
         let searchRange = (full as NSString).range(
             of: "needle",
             options: .backwards

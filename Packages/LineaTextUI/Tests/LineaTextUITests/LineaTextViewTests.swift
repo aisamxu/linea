@@ -235,6 +235,46 @@ struct LineaTextViewTests {
         #expect(layout.layoutCount == 3)
     }
 
+    @Test func rendererSkipsCaretsOnInvisibleLines() {
+        let text = String(repeating: "line\n", count: 999) + "line"
+        let carets = (0..<500).map { TextSelection.caret(at: $0 * 10) }
+        let engine = EditorEngine(text: text, selections: carets)
+        let layout = CoreTextLayoutEngine(
+            engine: engine,
+            font: theme.font,
+            tabInterval: theme.tabInterval,
+            lineHeightMultiple: theme.lineHeightMultiple
+        )
+        let renderer = TextRenderer(theme: theme)
+        guard let context = makeBitmapContext() else {
+            Issue.record("无法创建位图 context")
+            return
+        }
+
+        let visibleRect = CGRect(
+            x: 0,
+            y: 0,
+            width: 400,
+            height: layout.lineHeight * 3
+        )
+        NSAppearance(named: .aqua)?.performAsCurrentDrawingAppearance {
+            renderer.draw(
+                in: context,
+                dirtyRect: visibleRect,
+                layout: layout,
+                selections: engine.selections,
+                caretVisible: true
+            )
+        }
+
+        // 可见 3 行全部排版；其余屏外光标不应额外触发任何 CTLine。
+        #expect(
+            layout.layoutCount <= 5,
+            "屏外光标触发了额外排版：\(layout.layoutCount)"
+        )
+        #expect(engine.selections.count == 500)
+    }
+
     @Test func viewDrawSmokeWithSelections() {
         let (_, textView, _) = makeScrollView(text: "alpha\nbeta\ngamma")
         textView.selections = [

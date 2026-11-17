@@ -88,6 +88,59 @@ final class EditorViewportTests: XCTestCase {
         assertTailVisible(in: editor, expectedLineCount: 60)
     }
 
+    /// 空文档没有可横向滚动的内容，底部不应出现横向滚动条。
+    /// 行号 ruler 覆盖在 clip view 左侧，视口宽度必须扣除这段覆盖区。
+    func testEmptyEditorHasNoHorizontalScroller() {
+        let editor = makeEditorWindow(
+            text: "",
+            selections: [NSRange(location: 0, length: 0)]
+        )
+        editor.prepareForDisplay(focus: false)
+        waitForViewportToSettle(editor)
+
+        let viewport = effectiveViewportWidth(of: editor)
+        XCTAssertEqual(
+            editor.textView.layoutEngine.viewportWidth,
+            viewport,
+            accuracy: 0.5
+        )
+        XCTAssertEqual(editor.textView.frame.width, viewport, accuracy: 0.5)
+        XCTAssertNotNil(editor.scrollView.horizontalScroller)
+        XCTAssertEqual(editor.scrollView.horizontalScroller?.isHidden, true)
+    }
+
+    /// 放大字号时以左上角为锚点：横向滚动到中间后，
+    /// 左边缘停留的文本列应保持不变，而不是整体向右滑走。
+    func testZoomKeepsLeftEdgeTextColumnAnchored() {
+        let line = String(repeating: "abcdefghij", count: 200)
+        let editor = makeEditorWindow(
+            text: line,
+            selections: [NSRange(location: 0, length: 0)]
+        )
+        editor.prepareForDisplay(focus: false)
+        waitForViewportToSettle(editor)
+        editor.applyFontSize(13)
+        waitForViewportToSettle(editor)
+
+        editor.textView.applyScrollOrigin(CGPoint(x: 600, y: 0))
+        waitForViewportToSettle(editor)
+        XCTAssertEqual(editor.currentScrollOrigin.x, 600, accuracy: 1)
+
+        let before = editor.textView.layoutEngine.localOffset(
+            forLine: 0,
+            atX: editor.textView.horizontalScrollOffset
+        )
+        editor.applyFontSize(20)
+        waitForViewportToSettle(editor)
+        let after = editor.textView.layoutEngine.localOffset(
+            forLine: 0,
+            atX: editor.textView.horizontalScrollOffset
+        )
+
+        XCTAssertGreaterThan(before, 0)
+        XCTAssertLessThanOrEqual(abs(after - before), 1)
+    }
+
     func testMultiCursorCommandScrollDoesNotLeaveBlankTail() {
         let text = sixtyLines()
         let editor = makeEditorWindow(
@@ -145,6 +198,17 @@ final class EditorViewportTests: XCTestCase {
     private func sixtyLines() -> String {
         (1...60).map { String(format: "Line %02d: the quick brown fox", $0) }
             .joined(separator: "\n")
+    }
+
+    /// 与 LineaTextView 内部一致：可视宽度要扣除 ruler 覆盖在 clip view 上的部分。
+    private func effectiveViewportWidth(of editor: EditorViewController) -> CGFloat {
+        let scrollView = editor.scrollView
+        guard let ruler = scrollView.verticalRulerView else {
+            return scrollView.contentView.bounds.width
+        }
+        let clipOffset = max(0, scrollView.contentView.frame.minX - ruler.frame.minX)
+        let overlap = max(0, ruler.ruleThickness - clipOffset)
+        return max(0, scrollView.contentView.bounds.width - overlap)
     }
 
     private func waitForViewportToSettle(_ editor: EditorViewController) {

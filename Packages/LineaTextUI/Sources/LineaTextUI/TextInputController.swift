@@ -86,8 +86,7 @@ public enum TextInputController {
                 engine: engine
             )
             return TextSelection(
-                range: TextInputController.union(anchor, target),
-                affinity: selection.affinity
+                range: TextInputController.union(anchor, target)
             )
         }
 
@@ -95,32 +94,21 @@ public enum TextInputController {
         if !selection.isCaret {
             switch movement {
             case .characterBackward, .wordBackward:
-                return TextSelection.caret(
-                    at: selection.range.location,
-                    affinity: selection.affinity
-                )
+                return TextSelection.caret(at: selection.range.location)
             case .characterForward, .wordForward:
-                return TextSelection.caret(
-                    at: selection.insertionOffset,
-                    affinity: selection.affinity
-                )
+                return TextSelection.caret(at: selection.insertionOffset)
             case .lineStart:
                 return TextSelection.caret(
-                    at: engine.lineStart(at: selection.range.location),
-                    affinity: selection.affinity
+                    at: engine.lineStart(at: selection.range.location)
                 )
             case .lineEnd:
                 return TextSelection.caret(
-                    at: engine.contentEnd(at: selection.insertionOffset),
-                    affinity: selection.affinity
+                    at: engine.contentEnd(at: selection.insertionOffset)
                 )
             case .documentStart:
-                return TextSelection.caret(at: 0, affinity: selection.affinity)
+                return TextSelection.caret(at: 0)
             case .documentEnd:
-                return TextSelection.caret(
-                    at: engine.length,
-                    affinity: selection.affinity
-                )
+                return TextSelection.caret(at: engine.length)
             }
         }
 
@@ -129,7 +117,7 @@ public enum TextInputController {
             movement: movement,
             engine: engine
         )
-        return TextSelection.caret(at: target, affinity: selection.affinity)
+        return TextSelection.caret(at: target)
     }
 
     /// 计算从 offset 出发一步移动的边界。

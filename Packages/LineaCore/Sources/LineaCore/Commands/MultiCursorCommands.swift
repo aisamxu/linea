@@ -232,19 +232,8 @@ public enum MultiCursorCommands {
         textLength: Int
     ) -> [TextSelection] {
         let source = selections.isEmpty ? [TextSelection.caret(at: 0)] : selections
-        return source.map { selection in
-            guard selection.range.location != NSNotFound else {
-                return TextSelection.caret(at: 0, affinity: selection.affinity)
-            }
-            let location = min(max(0, selection.range.location), textLength)
-            let length = min(
-                max(0, selection.range.length),
-                textLength - location
-            )
-            return TextSelection(
-                range: NSRange(location: location, length: length),
-                affinity: selection.affinity
-            )
+        return source.map {
+            TextSelection(range: $0.range.clampedToTextLength(textLength))
         }
     }
 }
