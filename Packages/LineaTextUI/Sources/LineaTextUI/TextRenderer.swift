@@ -29,6 +29,8 @@ public struct TextRenderer {
 
         let lines = layout.lines(in: dirtyRect)
         guard !lines.isEmpty else { return }
+        // 可见行对应的文档偏移范围只算一次，选区、高亮与光标共用。
+        let visibleOffsets = visibleOffsetRange(lines: lines, layout: layout)
 
         let compositionLine = composition.flatMap {
             layout.compositionLine(for: $0)
@@ -39,6 +41,7 @@ public struct TextRenderer {
             dirtyRect: dirtyRect,
             lines: lines,
             layout: layout,
+            visibleOffsets: visibleOffsets,
             highlights: findHighlights
         )
         drawSelections(
@@ -46,6 +49,7 @@ public struct TextRenderer {
             dirtyRect: dirtyRect,
             lines: lines,
             layout: layout,
+            visibleOffsets: visibleOffsets,
             selections: selections,
             isComposing: compositionLine != nil
         )
@@ -72,10 +76,26 @@ public struct TextRenderer {
             in: context,
             dirtyRect: dirtyRect,
             layout: layout,
+            visibleOffsets: visibleOffsets,
             selections: selections,
             caretVisible: caretVisible,
             compositionLine: compositionLine
         )
+    }
+
+    /// 可见行对应的文档偏移闭区间。
+    ///
+    /// 闭区间包含最后一行末尾，文档末尾的光标不会被误判为屏外；
+    /// 横向或行内是否真正可见仍由矩形与脏区相交判断兜底。
+    private func visibleOffsetRange(
+        lines: Range<Int>,
+        layout: TextLayoutEngine
+    ) -> ClosedRange<Int> {
+        let firstLine = layout.layoutLine(number: lines.lowerBound)
+        let lastLine = layout.layoutLine(number: lines.upperBound - 1)
+        let start = firstLine.lineRange.location
+        let end = lastLine.lineRange.location + lastLine.lineRange.length
+        return start...end
     }
 
     // MARK: - 选区
@@ -85,16 +105,11 @@ public struct TextRenderer {
         dirtyRect: CGRect,
         lines: Range<Int>,
         layout: TextLayoutEngine,
+        visibleOffsets: ClosedRange<Int>,
         selections: [TextSelection],
         isComposing: Bool
     ) {
         guard !selections.isEmpty else { return }
-
-        // 只处理与可见行相交的选区，避免一个跨 10 万行的选区分段全部计算。
-        let firstLine = layout.layoutLine(number: lines.lowerBound)
-        let lastLine = layout.layoutLine(number: lines.upperBound - 1)
-        let visibleStart = firstLine.lineRange.location
-        let visibleEnd = lastLine.lineRange.location + lastLine.lineRange.length
 
         context.setFillColor(theme.selection.cgColor)
         // 组合期间主选区被 marked text 临时替换，不再高亮原文。
@@ -103,7 +118,12 @@ public struct TextRenderer {
             let range = selection.range
             guard range.length > 0 else { continue }
             let end = range.location + range.length
-            guard end >= visibleStart, range.location <= visibleEnd else { continue }
+            // 只处理与可见行相交的选区，避免一个跨 10 万行的选区分段全部计算。
+            guard end >= visibleOffsets.lowerBound,
+                  range.location <= visibleOffsets.upperBound
+            else {
+                continue
+            }
 
             // 只计算可见行，避免全选 10 万行时每帧遍历整个文档。
             for rect in layout.rects(for: range, intersectingLines: lines) {
@@ -124,20 +144,16 @@ public struct TextRenderer {
         dirtyRect: CGRect,
         lines: Range<Int>,
         layout: TextLayoutEngine,
+        visibleOffsets: ClosedRange<Int>,
         highlights: [NSRange]
     ) {
         guard !highlights.isEmpty else { return }
 
         // 只处理与可见行相交的范围；范围升序，可提前结束遍历。
-        let firstLine = layout.layoutLine(number: lines.lowerBound)
-        let lastLine = layout.layoutLine(number: lines.upperBound - 1)
-        let visibleStart = firstLine.lineRange.location
-        let visibleEnd = lastLine.lineRange.location + lastLine.lineRange.length
-
         for range in highlights {
             guard range.length > 0 else { continue }
-            if range.location + range.length < visibleStart { continue }
-            if range.location > visibleEnd { break }
+            if range.location + range.length < visibleOffsets.lowerBound { continue }
+            if range.location > visibleOffsets.upperBound { break }
             for rect in layout.rects(for: range, intersectingLines: lines) {
                 guard rect.intersects(dirtyRect) else { continue }
                 // 系统 API 会跟随浅色/深色外观选择高亮颜色。
@@ -281,6 +297,7 @@ public struct TextRenderer {
         in context: CGContext,
         dirtyRect: CGRect,
         layout: TextLayoutEngine,
+        visibleOffsets: ClosedRange<Int>,
         selections: [TextSelection],
         caretVisible: Bool,
         compositionLine: CompositionLine?
@@ -306,7 +323,11 @@ public struct TextRenderer {
         // 多光标：每个选区都画插入点。非空选区在活动端（insertionOffset）画光标，
         // 选区本身仍由 drawSelections 高亮；只在主选区画会导致其余光标不可见。
         for selection in selections {
-            let rect = layout.caretRect(for: selection.insertionOffset)
+            let offset = selection.insertionOffset
+            // 稀疏多光标可能分布在整篇文档：先按可见行过滤，避免每帧
+            // 为数百个屏外光标创建 CTLine 并挤占行缓存。
+            guard visibleOffsets.contains(offset) else { continue }
+            let rect = layout.caretRect(for: offset)
             guard rect.intersects(dirtyRect) else { continue }
             context.fill(rect)
         }

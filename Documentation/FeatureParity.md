@@ -193,21 +193,21 @@
 
 | 领域 | 覆盖项 | 测试位置 |
 | --- | --- | --- |
-| 文本/行模型 | 编辑、删除、批量应用、LF/CR/CRLF/U+2028/U+2029、CJK/emoji/ZWJ/surrogate、差分与 fuzz | `Packages/LineaCore/Tests`（125 个，全部通过） |
+| 文本/行模型 | 编辑、删除、批量应用、LF/CR/CRLF/U+2028/U+2029、CJK/emoji/ZWJ/surrogate、差分与 fuzz | `Packages/LineaCore/Tests`（129 个，全部通过） |
 | 撤销/事务 | 一次动作一步、500 光标一步撤销、合并规则、冻结边界、历史上限 | `Packages/LineaCore/Tests` |
 | 选区 | clamp、重叠合并、主选区、批量映射、adjuster 10 个用例移植 | `Packages/LineaCore/Tests` |
 | 多光标命令 | M1–M3、M7–M11（词范围、取消数量上限、行边界、CR/U+2028） | `Packages/LineaCore/Tests/MultiCursorCommandsTests.swift` |
 | 多光标交互 | M4–M6、M12（⌘+点击、⇧⌃+点击、Esc、⌥+点击） | `LineaTextViewEditingTests.swift` |
 | 剪贴板 | C1–C3（纯文本粘贴、多选区换行连接、Cut 一个事务） | `LineaTextViewEditingTests.swift` |
 | 拖放 | T1–T3、T5（内部移动、外部插入、文件 URL 拒绝、统一纯文本） | `LineaTextViewDragAndDropTests.swift`（9 个） |
-| 查找替换 | P1、P4–P9（自建查找栏、Replace All 一个历史条目、选区映射、快速扫描、Aa/wd） | `LineaTextViewFinderTests.swift`、`FindMatchScannerTests.swift`（9 个） |
+| 查找替换 | 匹配扫描（大小写、整词、不重叠、上限、Unicode）；查找栏交互与替换由人工验收 | `FindMatchScannerTests.swift`（9 个） |
 | 输入法 | I1、I2、I5、I6（marked text、主选区组合、提交边界、组合中 Esc/⌘Z） | `LineaTextViewInputMethodTests.swift`（15 个） |
 | 无障碍 | X1、X3（属性读取与通知） | `LineaTextViewAccessibilityTests.swift`（8 个） |
 | 布局几何 | 行高、命中测试、可见行、长行分块、行号宽度 | `CoreTextLayoutEngineTests`、`LongLineLayoutTests`、`TextGeometryTests` |
 | 字号缩放 | 10–24pt 夹取、偏好持久化、布局重建、顶部行不跳变、横向保持左边缘文本列、纯颜色切换不丢缓存 | `LineaTextViewTests`、`EditorFontZoomTests` |
 | App 集成 | 初始加载、越界 clamp、两次输入两步撤销、冻结、重载清历史、视口尾部、空文档无横向滚动条、500 光标结构护栏 | `Tests/LineaTests`（已改写，待 CI 首次运行） |
 
-总计：LineaCore 125 个、LineaTextUI 136 个、App XCTest 63 个（核心/数据 28 + 窗口几何 7 + 焦点 1 + 集成 12 + 视口 7 + 性能护栏 5 + 字号缩放 3）。
+总计：LineaCore 129 个、LineaTextUI 128 个、App XCTest 63 个（核心/数据 28 + 窗口几何 7 + 焦点 1 + 集成 12 + 视口 7 + 性能护栏 5 + 字号缩放 3）。
 LineaCore/LineaTextUI 已在本机全部通过；App XCTest 因本机只有 CommandLineTools、没有 Xcode，
 无法本地执行，由 `.github/workflows/test-ci.yml` 在 macOS runner 上运行。
 
