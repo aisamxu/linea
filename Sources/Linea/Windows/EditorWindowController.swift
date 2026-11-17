@@ -523,12 +523,6 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
             break
         case .noChange:
             NSSound.beep()
-        case let .tooMany(limit):
-            NSSound.beep()
-            Alerts.error(
-                title: "Too many selections",
-                message: "This command would create more than \(limit) selections. Select a shorter range or fewer lines and try again."
-            )
         }
     }
 

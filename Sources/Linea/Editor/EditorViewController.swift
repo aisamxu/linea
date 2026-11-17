@@ -563,8 +563,6 @@ final class EditorViewController: NSViewController {
             return .updated(selections.map(\.range))
         case .noChange:
             return .noChange
-        case let .tooMany(limit):
-            return .tooMany(limit: limit)
         }
     }
 
@@ -574,9 +572,8 @@ final class EditorViewController: NSViewController {
     }
 }
 
-/// 多光标命令对窗口层的结果，用于区分“无变化”“超上限”的提示。
+/// 多光标命令对窗口层的结果，用于区分“无变化”的提示。
 enum MultiCursorResult: Equatable {
     case updated([NSRange])
     case noChange
-    case tooMany(limit: Int)
 }

@@ -897,10 +897,7 @@ public final class LineaTextView:
             guard current.count > 1 else { return }
             current.remove(at: existing)
         } else {
-            guard current.count < SelectionModel.maximumSelections else {
-                NSSound.beep()
-                return
-            }
+            // 光标数量不设上限，整篇文档逐行加光标也允许。
             current.append(.caret(at: index))
         }
         commitSelections(current, source: .multiCursor)
@@ -910,10 +907,6 @@ public final class LineaTextView:
     private func appendCursor(at index: Int) {
         var current = engine.selections
         guard !current.contains(where: { $0.isCaret && $0.range.location == index }) else {
-            return
-        }
-        guard current.count < SelectionModel.maximumSelections else {
-            NSSound.beep()
             return
         }
         current.append(.caret(at: index))
@@ -1670,7 +1663,7 @@ public final class LineaTextView:
                 .map { TextSelection(range: clampedDocumentRange($0.rangeValue)) }
                 .sorted { $0.range.location < $1.range.location }
             if !updated.isEmpty {
-                selections = Array(updated.suffix(10_000))
+                selections = updated
             }
         }
     }
@@ -1793,7 +1786,7 @@ public final class LineaTextView:
         let updated = ranges
             .map { TextSelection(range: clampedDocumentRange($0.rangeValue)) }
             .sorted { $0.range.location < $1.range.location }
-        selections = Array(updated.suffix(10_000))
+        selections = updated
     }
 
     public override func accessibilityNumberOfCharacters() -> Int {

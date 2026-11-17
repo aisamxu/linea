@@ -107,18 +107,23 @@ struct MultiCursorCommandsTests {
         #expect(result == .updated([selection(0, 3), selection(4, 3)]))
     }
 
-    @Test func selectNextOccurrenceRejectsWhenAtSelectionLimit() {
-        let text = String(repeating: "a", count: MultiCursorCommands.maximumSelections)
-        let selections = (0..<MultiCursorCommands.maximumSelections).map {
-            selection($0, 1)
-        }
+    @Test func selectNextOccurrenceHasNoSelectionLimit() {
+        // 光标数量不再封顶：大量选区后仍能继续追加下一处匹配。
+        let count = 12_000
+        let text = String(repeating: "a ", count: count + 1)
+        let selections = (0..<count).map { selection($0 * 2, 1) }
 
         let result = MultiCursorCommands.selectNextOccurrence(
             in: text,
             selections: selections
         )
 
-        #expect(result == .tooMany(limit: MultiCursorCommands.maximumSelections))
+        guard case let .updated(updated) = result else {
+            Issue.record("应当继续追加匹配，而不是返回 \(result)")
+            return
+        }
+        #expect(updated.count == count + 1)
+        #expect(updated.last?.range.location == count * 2)
     }
 
     // MARK: - ⌃⌘G
@@ -147,14 +152,21 @@ struct MultiCursorCommandsTests {
         )
     }
 
-    @Test func selectAllOccurrencesEnforcesLimit() {
-        let text = String(repeating: "a", count: MultiCursorCommands.maximumSelections + 1)
+    @Test func selectAllOccurrencesHasNoLimit() {
+        // ⌃⌘G 不再因匹配过多而失败，整篇文档都要选中。
+        let count = 12_000
+        let text = String(repeating: "a", count: count)
         let result = MultiCursorCommands.selectAllOccurrences(
             in: text,
             selections: [selection(0, 1)]
         )
 
-        #expect(result == .tooMany(limit: MultiCursorCommands.maximumSelections))
+        guard case let .updated(updated) = result else {
+            Issue.record("应当返回全部匹配，而不是 \(result)")
+            return
+        }
+        #expect(updated.count == count)
+        #expect(updated.last?.range.location == count - 1)
     }
 
     // MARK: - ⇧⌘L
@@ -214,15 +226,23 @@ struct MultiCursorCommandsTests {
         #expect(result == .updated([.caret(at: 5)]))
     }
 
-    @Test func addCursorsEnforcesLimit() {
-        let lineCount = MultiCursorCommands.maximumSelections + 1
+    @Test func addCursorsHasNoLineLimit() {
+        // 超过 10,000 行也要每行一个光标。
+        let lineCount = 12_000
         let text = Array(repeating: "x", count: lineCount).joined(separator: "\n")
         let result = addCursors(
             in: text,
             selections: [selection(0, (text as NSString).length)]
         )
 
-        #expect(result == .tooMany(limit: MultiCursorCommands.maximumSelections))
+        guard case let .updated(updated) = result else {
+            Issue.record("应当返回全部行光标，而不是 \(result)")
+            return
+        }
+        #expect(updated.count == lineCount)
+        #expect(updated.first?.range.location == 1)
+        // 最后一行没有行终止符，行尾内容点就是文档末尾。
+        #expect(updated.last?.range.location == (text as NSString).length)
     }
 
     // MARK: - 工具
