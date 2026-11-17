@@ -37,7 +37,14 @@ jobs:
           sudo xcode-select -s "$XCODE_APP/Contents/Developer"
           xcodebuild -version
           test "$(uname -m)" = "arm64"
-          xcodebuild -version | head -n 1 | grep -q '^Xcode 26'
+          # 不能把 xcodebuild 输出接给 head/grep -q：它们提前关闭管道会让
+          # xcodebuild 写入已断开的 stdout 并崩溃（Broken pipe）。
+          XCODE_VERSION_OUTPUT="$(xcodebuild -version)"
+          XCODE_VERSION="${XCODE_VERSION_OUTPUT%%$'\n'*}"
+          if [[ "$XCODE_VERSION" != Xcode\ 26* ]]; then
+            echo "需要 Xcode 26，实际为: $XCODE_VERSION"
+            exit 1
+          fi
 
       - name: Install XcodeGen
         shell: bash
