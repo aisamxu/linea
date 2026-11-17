@@ -19,7 +19,8 @@ public struct TextRenderer {
         dirtyRect: CGRect,
         layout: TextLayoutEngine,
         selections: [TextSelection],
-        caretVisible: Bool
+        caretVisible: Bool,
+        composition: CompositionState? = nil
     ) {
         // 背景只在脏区域内填充，滚动时由 NSScrollView 负责暴露区域。
         context.setFillColor(theme.background.cgColor)
@@ -28,20 +29,43 @@ public struct TextRenderer {
         let lines = layout.lines(in: dirtyRect)
         guard !lines.isEmpty else { return }
 
+        let compositionLine = composition.flatMap {
+            layout.compositionLine(for: $0)
+        }
         drawSelections(
             in: context,
             dirtyRect: dirtyRect,
             lines: lines,
             layout: layout,
-            selections: selections
+            selections: selections,
+            isComposing: compositionLine != nil
         )
-        drawText(in: context, dirtyRect: dirtyRect, lines: lines, layout: layout)
+        drawCompositionSelection(
+            in: context,
+            dirtyRect: dirtyRect,
+            layout: layout,
+            compositionLine: compositionLine
+        )
+        drawText(
+            in: context,
+            dirtyRect: dirtyRect,
+            lines: lines,
+            layout: layout,
+            compositionLine: compositionLine
+        )
+        drawCompositionUnderline(
+            in: context,
+            dirtyRect: dirtyRect,
+            layout: layout,
+            compositionLine: compositionLine
+        )
         drawCaret(
             in: context,
             dirtyRect: dirtyRect,
             layout: layout,
             selections: selections,
-            caretVisible: caretVisible
+            caretVisible: caretVisible,
+            compositionLine: compositionLine
         )
     }
 
@@ -52,7 +76,8 @@ public struct TextRenderer {
         dirtyRect: CGRect,
         lines: Range<Int>,
         layout: TextLayoutEngine,
-        selections: [TextSelection]
+        selections: [TextSelection],
+        isComposing: Bool
     ) {
         guard !selections.isEmpty else { return }
 
@@ -63,7 +88,9 @@ public struct TextRenderer {
         let visibleEnd = lastLine.lineRange.location + lastLine.lineRange.length
 
         context.setFillColor(theme.selection.cgColor)
-        for selection in selections {
+        // 组合期间主选区被 marked text 临时替换，不再高亮原文。
+        let visibleSelections = isComposing ? selections.dropLast() : selections[...]
+        for selection in visibleSelections {
             let range = selection.range
             guard range.length > 0 else { continue }
             let end = range.location + range.length
@@ -83,12 +110,24 @@ public struct TextRenderer {
         in context: CGContext,
         dirtyRect: CGRect,
         lines: Range<Int>,
-        layout: TextLayoutEngine
+        layout: TextLayoutEngine,
+        compositionLine: CompositionLine?
     ) {
         context.setFillColor(theme.text.cgColor)
         // 只取与脏区域水平相交的片段；超长行不会为了绘制一行而排版整行。
         let xRange = dirtyRect.minX...max(dirtyRect.minX, dirtyRect.maxX)
         for lineNumber in lines {
+            // 组合行用「前缀 + marked text + 后缀」的虚拟行替代原文。
+            if let compositionLine, compositionLine.lineNumber == lineNumber {
+                drawCompositionText(
+                    in: context,
+                    dirtyRect: dirtyRect,
+                    layout: layout,
+                    compositionLine: compositionLine
+                )
+                continue
+            }
+
             let line = layout.layoutLine(number: lineNumber)
             guard !line.isEmpty else { continue }
 
@@ -112,6 +151,88 @@ public struct TextRenderer {
         }
     }
 
+    /// 绘制组合虚拟行，裁剪到脏区域，避免整行超出可见范围。
+    private func drawCompositionText(
+        in context: CGContext,
+        dirtyRect: CGRect,
+        layout: TextLayoutEngine,
+        compositionLine: CompositionLine
+    ) {
+        context.saveGState()
+        context.clip(to: dirtyRect)
+        context.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
+        context.textPosition = CGPoint(
+            x: 0,
+            y: layout.y(forLine: compositionLine.lineNumber) + compositionLine.ascent
+        )
+        CTLineDraw(compositionLine.line, context)
+        context.restoreGState()
+    }
+
+    // MARK: - 输入法组合
+
+    /// 组合内部选区，画在虚拟文本下方。
+    private func drawCompositionSelection(
+        in context: CGContext,
+        dirtyRect: CGRect,
+        layout: TextLayoutEngine,
+        compositionLine: CompositionLine?
+    ) {
+        guard let compositionLine,
+              compositionLine.selectedRange.length > 0
+        else {
+            return
+        }
+        let start = compositionLine.prefixLength
+            + compositionLine.selectedRange.location
+        let end = start + compositionLine.selectedRange.length
+        let startX = CGFloat(
+            CTLineGetOffsetForStringIndex(
+                compositionLine.line,
+                start,
+                nil
+            )
+        )
+        let endX = CGFloat(
+            CTLineGetOffsetForStringIndex(
+                compositionLine.line,
+                end,
+                nil
+            )
+        )
+        let rect = CGRect(
+            x: startX,
+            y: layout.y(forLine: compositionLine.lineNumber),
+            width: max(0, endX - startX),
+            height: layout.lineHeight
+        )
+        guard rect.intersects(dirtyRect) else { return }
+        context.setFillColor(theme.selection.cgColor)
+        context.fill(rect)
+    }
+
+    /// marked text 下划线。
+    private func drawCompositionUnderline(
+        in context: CGContext,
+        dirtyRect: CGRect,
+        layout: TextLayoutEngine,
+        compositionLine: CompositionLine?
+    ) {
+        guard let compositionLine else { return }
+        let width = compositionLine.markedEndX - compositionLine.markedStartX
+        guard width > 0 else { return }
+        let rect = CGRect(
+            x: compositionLine.markedStartX,
+            y: layout.y(forLine: compositionLine.lineNumber)
+                + compositionLine.ascent + 2,
+            width: width,
+            height: 2
+        )
+        guard rect.intersects(dirtyRect) else { return }
+        context.setFillColor(theme.text.cgColor)
+        context.fill(rect)
+    }
+
     // MARK: - 光标
 
     private func drawCaret(
@@ -119,9 +240,26 @@ public struct TextRenderer {
         dirtyRect: CGRect,
         layout: TextLayoutEngine,
         selections: [TextSelection],
-        caretVisible: Bool
+        caretVisible: Bool,
+        compositionLine: CompositionLine?
     ) {
-        guard caretVisible, let caret = selections.last, caret.isCaret else { return }
+        guard caretVisible else { return }
+
+        // 组合期间光标在 marked text 内部，位置由输入法选区决定。
+        if let compositionLine {
+            let rect = CGRect(
+                x: compositionLine.caretX,
+                y: layout.y(forLine: compositionLine.lineNumber),
+                width: 2,
+                height: layout.lineHeight
+            )
+            guard rect.intersects(dirtyRect) else { return }
+            context.setFillColor(theme.caret.cgColor)
+            context.fill(rect)
+            return
+        }
+
+        guard let caret = selections.last, caret.isCaret else { return }
         let rect = layout.caretRect(for: caret.range.location)
         guard rect.intersects(dirtyRect) else { return }
         context.setFillColor(theme.caret.cgColor)

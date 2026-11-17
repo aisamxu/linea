@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import LineaCore
 
 /// 文本布局引擎协议。
 ///
@@ -39,6 +40,10 @@ public protocol TextLayoutEngine: AnyObject {
     func index(at point: CGPoint) -> Int
     /// 垂直移动的目标偏移，尽量保持 x 对应的列。
     func verticalDestination(from offset: Int, toY y: CGFloat, x: CGFloat) -> Int
+
+    /// 输入法组合的虚拟行。没有组合、marked text 为空或组合范围非法时返回 nil。
+    /// 组合期间 buffer 不变，本方法只读取引擎文本并临时排版。
+    func compositionLine(for composition: CompositionState) -> CompositionLine?
 
     /// 文本变化或字体变化后清空布局缓存。
     func invalidateLayout()

@@ -208,6 +208,116 @@ public final class CoreTextLayoutEngine: TextLayoutEngine {
         return textLine.chunkLayout?.fragments(intersecting: xRange) ?? []
     }
 
+    // MARK: - 输入法组合
+
+    /// 构造组合期间的虚拟行：行前缀 + marked text + 行后缀。
+    ///
+    /// 组合不写 buffer，因此这里每次按需临时排版；组合文本通常很短，
+    /// 不会命中超长行分块路径。跨行替换只虚拟化首行，后续行仍按原文绘制。
+    public func compositionLine(for composition: CompositionState) -> CompositionLine? {
+        let marked = composition.markedText
+        guard !marked.isEmpty else { return nil }
+
+        let length = engine.length
+        // 输入法显式范围优先；否则用组合开始时的主选区。
+        var target = composition.replacementRange
+        if target.location == NSNotFound
+            || target.location < 0
+            || target.length < 0
+            || target.location > length
+            || target.length > length - target.location
+        {
+            target = composition.baseSelections.last?.range
+                ?? NSRange(location: 0, length: 0)
+        }
+        let start = min(max(0, target.location), length)
+        let end = min(max(start, target.location + target.length), length)
+
+        let lineNumber = engine.lineNumber(at: start)
+        let contentRange = engine.lineContentRange(at: lineNumber)
+        let contentStart = contentRange.location
+        let contentEnd = contentStart + contentRange.length
+        let prefixEnd = min(max(start, contentStart), contentEnd)
+        let suffixStart = min(max(end, prefixEnd), contentEnd)
+
+        let prefix = engine.substring(
+            in: NSRange(
+                location: contentStart,
+                length: prefixEnd - contentStart
+            )
+        )
+        let suffix = engine.substring(
+            in: NSRange(
+                location: suffixStart,
+                length: contentEnd - suffixStart
+            )
+        )
+        let attributed = NSAttributedString(
+            string: prefix + marked + suffix,
+            attributes: attributes
+        )
+        let ctLine = CTLineCreateWithAttributedString(attributed)
+
+        var ascent: CGFloat = 0
+        var descent: CGFloat = 0
+        var leading: CGFloat = 0
+        let width = CGFloat(
+            CTLineGetTypographicBounds(ctLine, &ascent, &descent, &leading)
+        )
+
+        let prefixLength = prefix.utf16.count
+        let markedLength = marked.utf16.count
+        let selected = Self.clampedMarkedSelection(
+            composition.selectedRange,
+            markedLength: markedLength
+        )
+        let markedStartX = CGFloat(
+            CTLineGetOffsetForStringIndex(ctLine, prefixLength, nil)
+        )
+        let markedEndX = CGFloat(
+            CTLineGetOffsetForStringIndex(
+                ctLine,
+                prefixLength + markedLength,
+                nil
+            )
+        )
+        let caretX = CGFloat(
+            CTLineGetOffsetForStringIndex(
+                ctLine,
+                prefixLength + selected.location + selected.length,
+                nil
+            )
+        )
+
+        return CompositionLine(
+            lineNumber: lineNumber,
+            contentRange: contentRange,
+            line: ctLine,
+            prefixLength: prefixLength,
+            markedLength: markedLength,
+            selectedRange: selected,
+            width: width,
+            ascent: ascent,
+            descent: descent,
+            leading: leading,
+            markedStartX: markedStartX,
+            markedEndX: markedEndX,
+            caretX: caretX
+        )
+    }
+
+    private static func clampedMarkedSelection(
+        _ range: NSRange,
+        markedLength: Int
+    ) -> NSRange {
+        guard range.location != NSNotFound, range.location >= 0, range.length >= 0 else {
+            return NSRange(location: 0, length: 0)
+        }
+        let location = min(range.location, markedLength)
+        let length = min(range.length, markedLength - location)
+        return NSRange(location: location, length: length)
+    }
+
     public func invalidateLayout() {
         lineCache.removeAll(keepingCapacity: true)
         measuredMaxWidth = 0

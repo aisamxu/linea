@@ -88,6 +88,9 @@ public final class LineaTextView: NSView, NSTextInputClient, TextSurface {
     /// 连续 Shift 扩展时保存每个选区的固定锚点，方向反转不会漂移。
     private var extendAnchors: [Int]?
 
+    /// 输入法组合内 Shift 扩展的固定锚点（marked text 内 UTF-16 偏移）。
+    private var compositionAnchor: Int?
+
     public init(engine: EditorEngine, theme: TextTheme = .standard) {
         self.engine = engine
         self.theme = theme
@@ -214,7 +217,8 @@ public final class LineaTextView: NSView, NSTextInputClient, TextSurface {
                 dirtyRect: dirtyRect,
                 layout: layoutEngine,
                 selections: engine.selections,
-                caretVisible: isCaretVisible
+                caretVisible: isCaretVisible,
+                composition: engine.composition
             )
         }
     }
@@ -282,7 +286,9 @@ public final class LineaTextView: NSView, NSTextInputClient, TextSurface {
         resetCaretBlink()
         if engine.isComposing {
             // 输入法提交：把最终文本作为一次事务写入主选区。
+            compositionAnchor = nil
             engine.insertText(text)
+            inputContext?.invalidateCharacterCoordinates()
             return
         }
         if replacementRange.location != NSNotFound {
@@ -315,48 +321,64 @@ public final class LineaTextView: NSView, NSTextInputClient, TextSurface {
     // MARK: 删除命令
 
     public override func deleteBackward(_ sender: Any?) {
+        guard !deleteCompositionText(.backward) else { return }
         engine.delete(.backward, .character)
     }
 
     public override func deleteForward(_ sender: Any?) {
+        guard !deleteCompositionText(.forward) else { return }
         engine.delete(.forward, .character)
     }
 
     public override func deleteBackwardByDecomposingPreviousCharacter(_ sender: Any?) {
+        guard !deleteCompositionText(.backward) else { return }
         engine.delete(.backward, .character)
     }
 
     public override func deleteWordBackward(_ sender: Any?) {
+        guard !deleteCompositionText(.backward) else { return }
         engine.delete(.backward, .word)
     }
 
     public override func deleteWordForward(_ sender: Any?) {
+        guard !deleteCompositionText(.forward) else { return }
         engine.delete(.forward, .word)
     }
 
     public override func deleteToBeginningOfLine(_ sender: Any?) {
+        guard !deleteCompositionText(.toStart) else { return }
         engine.delete(.backward, .line)
     }
 
     public override func deleteToEndOfLine(_ sender: Any?) {
+        guard !deleteCompositionText(.toEnd) else { return }
         engine.delete(.forward, .line)
     }
 
     public override func deleteToBeginningOfParagraph(_ sender: Any?) {
+        guard !deleteCompositionText(.toStart) else { return }
         engine.delete(.backward, .line)
     }
 
     public override func deleteToEndOfParagraph(_ sender: Any?) {
+        guard !deleteCompositionText(.toEnd) else { return }
         engine.delete(.forward, .line)
     }
 
     @objc public func delete(_ sender: Any?) {
+        // 组合中 Delete 等价于前向删除 marked text，不删除文档内容。
+        guard !deleteCompositionText(.forward) else { return }
         engine.deleteSelections()
     }
 
     // MARK: 移动命令
 
     private func move(_ movement: TextMovement, extendSelection: Bool) {
+        // 组合期间方向键在 marked text 内移动，不碰 buffer 选区。
+        if moveCompositionCaret(movement, extendSelection: extendSelection) {
+            return
+        }
+
         var anchors: [Int]?
         if extendSelection {
             if extendAnchors?.count != engine.selections.count {
@@ -475,6 +497,8 @@ public final class LineaTextView: NSView, NSTextInputClient, TextSurface {
     // MARK: 选区命令
 
     public override func selectAll(_ sender: Any?) {
+        // 全选会让组合失去锚点，先提交再选，避免 marked text 悬空。
+        commitPendingInput()
         commitSelections(
             [TextSelection(range: NSRange(location: 0, length: engine.length))],
             source: .command
@@ -504,6 +528,11 @@ public final class LineaTextView: NSView, NSTextInputClient, TextSurface {
     }
 
     public override func cancelOperation(_ sender: Any?) {
+        // 组合中 Esc 取消输入法组合，buffer 与历史保持不变。
+        if engine.isComposing {
+            unmarkText()
+            return
+        }
         _ = collapseSelectionsIfNeeded()
     }
 
@@ -523,11 +552,14 @@ public final class LineaTextView: NSView, NSTextInputClient, TextSurface {
     // MARK: - 撤销 / 重做
 
     @objc public func undo(_ sender: Any?) {
+        // 与 1.0.2 一致：组合中 ⌘Z 不执行撤销。
+        guard !engine.isComposing else { return }
         resetCaretBlink()
         engine.undo()
     }
 
     @objc public func redo(_ sender: Any?) {
+        guard !engine.isComposing else { return }
         resetCaretBlink()
         engine.redo()
     }
@@ -555,6 +587,8 @@ public final class LineaTextView: NSView, NSTextInputClient, TextSurface {
     }
 
     @objc public func cut(_ sender: Any?) {
+        // 剪切前提交组合，保证复制/删除的是最终文本。
+        commitPendingInput()
         guard !selectedText.isEmpty else { return }
         copy(sender)
         engine.deleteSelections(origin: .cut)
@@ -572,8 +606,8 @@ public final class LineaTextView: NSView, NSTextInputClient, TextSurface {
         else {
             return
         }
-        // 粘贴前先丢弃未提交的组合，避免把半成品拼进新文本。
-        engine.unmarkText()
+        // 粘贴前先提交组合，避免丢失 marked text 或把半成品拼进新文本。
+        commitPendingInput()
         engine.replaceSelections(with: text, origin: .paste)
     }
 
@@ -642,6 +676,8 @@ public final class LineaTextView: NSView, NSTextInputClient, TextSurface {
 
     public override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
+        // 点击别处先提交组合，等价于原生文本视图的失焦提交。
+        commitPendingInput()
         let point = convert(event.locationInWindow, from: nil)
         let index = layoutEngine.index(at: point)
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
@@ -893,6 +929,12 @@ public final class LineaTextView: NSView, NSTextInputClient, TextSurface {
         let text = (string as? NSAttributedString)?.string
             ?? (string as? String)
             ?? ""
+        // AppKit 约定：空 marked text 表示取消组合。
+        guard !text.isEmpty else {
+            unmarkText()
+            return
+        }
+        compositionAnchor = nil
         engine.setMarkedText(
             text,
             selectedRange: selectedRange,
@@ -904,29 +946,228 @@ public final class LineaTextView: NSView, NSTextInputClient, TextSurface {
     }
 
     public func unmarkText() {
+        compositionAnchor = nil
         engine.unmarkText()
         needsDisplay = true
         inputContext?.invalidateCharacterCoordinates()
     }
 
+    /// 组合期间返回 marked text 内部选区在文档坐标系中的位置。
     public func selectedRange() -> NSRange {
-        engine.primarySelection.range
+        guard let composition = engine.composition else {
+            return engine.primarySelection.range
+        }
+        // 组合选区落在 marked text 内，长度可以超出 buffer 末尾（marked text 尚未写入）。
+        let location = max(0, compositionDocumentStart + composition.selectedRange.location)
+        return NSRange(
+            location: location,
+            length: max(0, composition.selectedRange.length)
+        )
     }
 
     public func markedRange() -> NSRange {
-        guard let composition = engine.composition,
-              let base = composition.baseSelections.last
-        else {
+        guard let composition = engine.composition else {
             return NSRange(location: NSNotFound, length: 0)
         }
         return NSRange(
-            location: base.range.location,
+            location: compositionDocumentStart,
             length: composition.markedTextLength
         )
     }
 
     public func hasMarkedText() -> Bool {
-        engine.isComposing
+        guard let composition = engine.composition else { return false }
+        return !composition.markedText.isEmpty
+    }
+
+    /// 显式提交待输入内容。保存、切换标签、关窗、查找、拖放、AX 读取前调用。
+    public func commitPendingInput() {
+        guard engine.isComposing else { return }
+        compositionAnchor = nil
+        engine.commitPendingInput()
+        resetCaretBlink()
+        needsDisplay = true
+        inputContext?.invalidateCharacterCoordinates()
+    }
+
+    /// 先提交组合再返回全文，供会话快照与保存使用。
+    public func prepareForSnapshot() -> String {
+        commitPendingInput()
+        return engine.text
+    }
+
+    // MARK: - 组合内编辑
+
+    private enum CompositionDeletion {
+        case backward
+        case forward
+        case toStart
+        case toEnd
+    }
+
+    /// 组合期间方向键在 marked text 内移动；返回 false 表示当前没有组合。
+    private func moveCompositionCaret(
+        _ movement: TextMovement,
+        extendSelection: Bool
+    ) -> Bool {
+        guard let composition = engine.composition else { return false }
+        let marked = composition.markedText as NSString
+        let length = marked.length
+        guard length > 0 else { return true }
+
+        var selected = composition.selectedRange
+
+        // 有选区且不扩展：只折叠到方向对应的一端，与文档选区行为一致。
+        if !extendSelection, selected.length > 0 {
+            switch movement {
+            case .characterBackward, .wordBackward, .lineStart, .documentStart:
+                break
+            case .characterForward, .wordForward, .lineEnd, .documentEnd:
+                selected.location += selected.length
+            }
+            selected.length = 0
+            applyCompositionSelection(selected)
+            return true
+        }
+
+        let anchor: Int
+        let active: Int
+        if extendSelection {
+            // 首次 Shift 扩展时记录锚点，反向移动才能正确回缩。
+            if compositionAnchor == nil {
+                compositionAnchor = selected.location
+            }
+            anchor = compositionAnchor ?? selected.location
+            if selected.length == 0 {
+                active = selected.location
+            } else if anchor <= selected.location {
+                active = selected.location + selected.length
+            } else {
+                active = selected.location
+            }
+        } else {
+            compositionAnchor = nil
+            anchor = 0
+            active = selected.location
+        }
+
+        let target: Int
+        switch movement {
+        case .characterBackward, .wordBackward:
+            target = previousGraphemeBoundary(before: active, in: marked)
+        case .characterForward, .wordForward:
+            target = nextGraphemeBoundary(after: active, in: marked)
+        case .lineStart, .documentStart:
+            target = 0
+        case .lineEnd, .documentEnd:
+            target = length
+        }
+
+        if extendSelection {
+            selected = NSRange(
+                location: min(anchor, target),
+                length: abs(anchor - target)
+            )
+        } else {
+            selected = NSRange(location: target, length: 0)
+        }
+        applyCompositionSelection(selected)
+        return true
+    }
+
+    /// 组合期间删除只修改 marked text，不写入 buffer；返回 false 表示当前没有组合。
+    private func deleteCompositionText(_ kind: CompositionDeletion) -> Bool {
+        guard let composition = engine.composition else { return false }
+        let marked = composition.markedText as NSString
+        let selected = composition.selectedRange
+        let start = min(max(0, selected.location), marked.length)
+        let end = min(start + selected.length, marked.length)
+
+        let deleteStart: Int
+        let deleteEnd: Int
+        switch kind {
+        case .backward:
+            deleteStart = start < end
+                ? start
+                : previousGraphemeBoundary(before: start, in: marked)
+            deleteEnd = end
+        case .forward:
+            deleteStart = start
+            deleteEnd = start < end
+                ? end
+                : nextGraphemeBoundary(after: end, in: marked)
+        case .toStart:
+            deleteStart = 0
+            deleteEnd = end
+        case .toEnd:
+            deleteStart = start
+            deleteEnd = marked.length
+        }
+
+        // 已到组合边界：消耗按键但不动文档。
+        guard deleteEnd > deleteStart else { return true }
+
+        let updated = marked.replacingCharacters(
+            in: NSRange(location: deleteStart, length: deleteEnd - deleteStart),
+            with: ""
+        )
+        compositionAnchor = nil
+        if updated.isEmpty {
+            engine.unmarkText()
+        } else {
+            engine.setMarkedText(
+                updated,
+                selectedRange: NSRange(location: deleteStart, length: 0),
+                replacementRange: NSRange(location: NSNotFound, length: 0)
+            )
+        }
+        resetCaretBlink()
+        needsDisplay = true
+        inputContext?.invalidateCharacterCoordinates()
+        return true
+    }
+
+    private func applyCompositionSelection(_ selected: NSRange) {
+        guard let composition = engine.composition else { return }
+        engine.setMarkedText(
+            composition.markedText,
+            selectedRange: selected,
+            replacementRange: NSRange(location: NSNotFound, length: 0)
+        )
+        resetCaretBlink()
+        needsDisplay = true
+        inputContext?.invalidateCharacterCoordinates()
+    }
+
+    private func previousGraphemeBoundary(
+        before offset: Int,
+        in text: NSString
+    ) -> Int {
+        guard offset > 0 else { return 0 }
+        return text.rangeOfComposedCharacterSequence(at: offset - 1).location
+    }
+
+    private func nextGraphemeBoundary(
+        after offset: Int,
+        in text: NSString
+    ) -> Int {
+        guard offset < text.length else { return text.length }
+        let range = text.rangeOfComposedCharacterSequence(at: offset)
+        return range.location + range.length
+    }
+
+    /// 组合替换的文档起点：输入法显式范围优先，否则为组合开始时的主选区。
+    private var compositionDocumentStart: Int {
+        guard let composition = engine.composition else { return 0 }
+        if composition.replacementRange.location != NSNotFound,
+           composition.replacementRange.location >= 0
+        {
+            return min(composition.replacementRange.location, engine.length)
+        }
+        return min(
+            max(0, composition.baseSelections.last?.range.location ?? 0),
+            engine.length
+        )
     }
 
     public func attributedSubstring(
@@ -965,7 +1206,20 @@ public final class LineaTextView: NSView, NSTextInputClient, TextSurface {
         }
         actualRange?.pointee = NSRange(location: location, length: 0)
 
-        let caret = layoutEngine.caretRect(for: location)
+        // 组合期间候选窗跟随虚拟行中的 marked text 光标，而不是原文档光标。
+        let caret: CGRect
+        if let composition = engine.composition,
+           let compositionLine = layoutEngine.compositionLine(for: composition)
+        {
+            caret = CGRect(
+                x: compositionLine.caretX,
+                y: layoutEngine.y(forLine: compositionLine.lineNumber),
+                width: 2,
+                height: layoutEngine.lineHeight
+            )
+        } else {
+            caret = layoutEngine.caretRect(for: location)
+        }
         guard let window else { return caret }
         let windowRect = convert(caret, to: nil)
         return window.convertToScreen(windowRect)
@@ -1057,6 +1311,8 @@ public final class LineaTextView: NSView, NSTextInputClient, TextSurface {
         extendSelection: Bool,
         distance: CGFloat? = nil
     ) {
+        // 上下键通常被输入法用于候选翻页；未消费时也不在组合期间移动文档光标。
+        guard !engine.isComposing else { return }
         let current = engine.selections
         let step = distance ?? layoutEngine.lineHeight
 
