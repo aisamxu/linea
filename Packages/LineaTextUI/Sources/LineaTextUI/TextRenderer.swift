@@ -20,7 +20,8 @@ public struct TextRenderer {
         layout: TextLayoutEngine,
         selections: [TextSelection],
         caretVisible: Bool,
-        composition: CompositionState? = nil
+        composition: CompositionState? = nil,
+        findHighlights: [NSRange] = []
     ) {
         // 背景只在脏区域内填充，滚动时由 NSScrollView 负责暴露区域。
         context.setFillColor(theme.background.cgColor)
@@ -32,6 +33,14 @@ public struct TextRenderer {
         let compositionLine = composition.flatMap {
             layout.compositionLine(for: $0)
         }
+        // 查找高亮画在文本和选区下方，避免盖住字形与选中反馈。
+        drawFindHighlights(
+            in: context,
+            dirtyRect: dirtyRect,
+            lines: lines,
+            layout: layout,
+            highlights: findHighlights
+        )
         drawSelections(
             in: context,
             dirtyRect: dirtyRect,
@@ -100,6 +109,39 @@ public struct TextRenderer {
             for rect in layout.rects(for: range, intersectingLines: lines) {
                 guard rect.intersects(dirtyRect) else { continue }
                 context.fill(rect)
+            }
+        }
+    }
+
+    // MARK: - 查找高亮
+
+    /// 自绘增量查找高亮。
+    ///
+    /// NSTextFinder 的自动变暗只对其原生内容视图生效；自绘视图必须读取
+    /// `incrementalMatchRanges` 后用系统高亮色自行绘制，外观才能与查找栏一致。
+    private func drawFindHighlights(
+        in context: CGContext,
+        dirtyRect: CGRect,
+        lines: Range<Int>,
+        layout: TextLayoutEngine,
+        highlights: [NSRange]
+    ) {
+        guard !highlights.isEmpty else { return }
+
+        // 只处理与可见行相交的范围；范围升序，可提前结束遍历。
+        let firstLine = layout.layoutLine(number: lines.lowerBound)
+        let lastLine = layout.layoutLine(number: lines.upperBound - 1)
+        let visibleStart = firstLine.lineRange.location
+        let visibleEnd = lastLine.lineRange.location + lastLine.lineRange.length
+
+        for range in highlights {
+            guard range.length > 0 else { continue }
+            if range.location + range.length < visibleStart { continue }
+            if range.location > visibleEnd { break }
+            for rect in layout.rects(for: range, intersectingLines: lines) {
+                guard rect.intersects(dirtyRect) else { continue }
+                // 系统 API 会跟随浅色/深色外观选择高亮颜色。
+                NSTextFinder.drawIncrementalMatchHighlight(in: rect)
             }
         }
     }
@@ -259,10 +301,14 @@ public struct TextRenderer {
             return
         }
 
-        guard let caret = selections.last, caret.isCaret else { return }
-        let rect = layout.caretRect(for: caret.range.location)
-        guard rect.intersects(dirtyRect) else { return }
+        guard !selections.isEmpty else { return }
         context.setFillColor(theme.caret.cgColor)
-        context.fill(rect)
+        // 多光标：每个选区都画插入点。非空选区在活动端（insertionOffset）画光标，
+        // 选区本身仍由 drawSelections 高亮；只在主选区画会导致其余光标不可见。
+        for selection in selections {
+            let rect = layout.caretRect(for: selection.insertionOffset)
+            guard rect.intersects(dirtyRect) else { continue }
+            context.fill(rect)
+        }
     }
 }

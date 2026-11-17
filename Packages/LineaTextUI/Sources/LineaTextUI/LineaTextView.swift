@@ -40,6 +40,14 @@ public final class LineaTextView:
         }
     }
 
+    /// 查找匹配高亮范围（升序）。由控制器根据查找器结果更新，视图只负责绘制。
+    public var findHighlightRanges: [NSRange] = [] {
+        didSet {
+            guard findHighlightRanges != oldValue else { return }
+            needsDisplay = true
+        }
+    }
+
     public weak var lineNumberRuler: LineNumberRulerView?
 
     /// 编辑开关。关闭时引擎拒绝所有修改，移动和选择仍然可用。
@@ -244,7 +252,8 @@ public final class LineaTextView:
                 layout: layoutEngine,
                 selections: engine.selections,
                 caretVisible: isCaretVisible,
-                composition: engine.composition
+                composition: engine.composition,
+                findHighlights: findHighlightRanges
             )
             drawDropIndicator(in: context, dirtyRect: dirtyRect)
         }

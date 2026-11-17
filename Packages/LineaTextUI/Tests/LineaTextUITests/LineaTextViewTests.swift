@@ -258,6 +258,116 @@ struct LineaTextViewTests {
         #expect(textView.layoutEngine.layoutCount <= 4)
     }
 
+    /// 绘制到可读像素的位图，用于验证光标/查找高亮确实落到正确位置。
+    private func makeFlippedBitmap(
+        width: Int,
+        height: Int
+    ) -> (NSBitmapImageRep, CGContext)? {
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: width,
+            pixelsHigh: height,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ), let context = NSGraphicsContext(bitmapImageRep: rep)?.cgContext else {
+            return nil
+        }
+        return (rep, context)
+    }
+
+    private func render(_ textView: LineaTextView) -> NSBitmapImageRep? {
+        let width = max(1, Int(textView.bounds.width))
+        let height = max(1, Int(textView.bounds.height))
+        guard let (rep, context) = makeFlippedBitmap(width: width, height: height)
+        else { return nil }
+
+        // 位图 context 原点在左下；翻转 CTM 后与视图的 y 向下坐标一致，
+        // 这样 colorAt(x:y:)（原点左上）可直接用视图坐标采样。
+        context.translateBy(x: 0, y: CGFloat(height))
+        context.scaleBy(x: 1, y: -1)
+
+        textView.appearance = NSAppearance(named: .aqua)
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
+        textView.draw(textView.bounds)
+        return rep
+    }
+
+    @Test func everySelectionDrawsItsOwnCaret() {
+        let (_, textView, _) = makeScrollView(text: "\n\n\n")
+        var custom = theme
+        custom.background = .white
+        custom.text = .black
+        custom.caret = .systemRed
+        textView.theme = custom
+        textView.selections = [
+            .caret(at: 0), .caret(at: 1), .caret(at: 2), .caret(at: 3),
+        ]
+        textView.isCaretVisible = true
+
+        guard let rep = render(textView) else {
+            Issue.record("无法渲染多光标位图")
+            return
+        }
+
+        for offset in 0..<4 {
+            let caret = textView.layoutEngine.caretRect(for: offset)
+            let color = rep.colorAt(
+                x: Int(caret.midX),
+                y: Int(caret.midY)
+            )
+            // 每个光标都是红色竖线；只画主光标时其余行会是白色。
+            #expect((color?.redComponent ?? 0) > 0.8)
+            #expect((color?.greenComponent ?? 1) < 0.4)
+        }
+    }
+
+    @Test func findHighlightRangesPaintSystemHighlight() {
+        let (_, textView, _) = makeScrollView(text: "    \nxxxx")
+        var custom = theme
+        custom.background = .white
+        custom.text = .black
+        textView.theme = custom
+        textView.findHighlightRanges = [NSRange(location: 0, length: 2)]
+
+        guard let rep = render(textView) else {
+            Issue.record("无法渲染查找高亮位图")
+            return
+        }
+
+        let highlighted = textView.layoutEngine
+            .rects(for: NSRange(location: 0, length: 2))
+            .first
+        let plain = textView.layoutEngine
+            .rects(for: NSRange(location: 2, length: 2))
+            .first
+        guard let highlighted, let plain else {
+            Issue.record("缺少高亮矩形")
+            return
+        }
+
+        let matchColor = rep.colorAt(
+            x: Int(highlighted.midX),
+            y: Int(highlighted.midY)
+        )
+        let plainColor = rep.colorAt(
+            x: Int(plain.midX),
+            y: Int(plain.midY)
+        )
+        // 系统增量查找高亮为黄色；未命中区域保持背景白色。
+        #expect((matchColor?.redComponent ?? 0) > 0.7)
+        #expect((matchColor?.greenComponent ?? 0) > 0.7)
+        #expect((matchColor?.blueComponent ?? 1) < 0.6)
+        #expect((plainColor?.redComponent ?? 0) > 0.9)
+        #expect((plainColor?.blueComponent ?? 0) > 0.9)
+    }
+
     @Test func scrollRangeToVisibleSmoke() {
         let (scrollView, textView, _) = makeScrollView(
             text: String(repeating: "line\n", count: 999) + "line",
