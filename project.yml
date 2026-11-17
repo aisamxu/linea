@@ -19,9 +19,9 @@ settings:
     DEAD_CODE_STRIPPING: YES
 
 packages:
+  # 项目内 vendored 2.4.1，含多光标性能补丁；补丁说明见 Vendor/STTextView/LINEA_PATCHES.md
   STTextView:
-    url: https://github.com/krzyzanowskim/STTextView.git
-    exactVersion: 2.4.1
+    path: Vendor/STTextView
   STTextKitPlus:
     url: https://github.com/krzyzanowskim/STTextKitPlus.git
     exactVersion: 0.3.1
@@ -38,8 +38,8 @@ targets:
       base:
         PRODUCT_NAME: Linea
         PRODUCT_BUNDLE_IDENTIFIER: com.samxu.Linea
-        MARKETING_VERSION: "1.0.1"
-        CURRENT_PROJECT_VERSION: "2"
+        MARKETING_VERSION: "1.0.2"
+        CURRENT_PROJECT_VERSION: "3"
         INFOPLIST_FILE: Resources/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ENABLE_HARDENED_RUNTIME: NO

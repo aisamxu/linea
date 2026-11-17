@@ -7,6 +7,11 @@ import STTextKitPlus
 /// 顺序必须保留：STTextView 把最后一个 selection 当作主选区，输入法候选窗口、
 /// 滚动定位和命令处理都依赖它。
 enum TextSelectionBridge {
+    #if DEBUG
+        /// 仅供性能回归测试断言“一次按键只写回一次选区”。
+        static var setRangesCallCount = 0
+    #endif
+
     static func ranges(in textView: STTextView) -> [NSRange] {
         let layoutManager = textView.textLayoutManager
         guard let contentManager = layoutManager.textContentManager else {
@@ -27,6 +32,10 @@ enum TextSelectionBridge {
     }
 
     static func setRanges(_ ranges: [NSRange], in textView: STTextView) {
+        #if DEBUG
+            setRangesCallCount += 1
+        #endif
+
         let layoutManager = textView.textLayoutManager
         guard let contentManager = layoutManager.textContentManager else { return }
 

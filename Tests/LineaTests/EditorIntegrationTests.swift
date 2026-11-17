@@ -79,7 +79,14 @@ final class EditorIntegrationTests: XCTestCase {
         undo.redo()
         spinMainRunLoop()
         XCTAssertEqual(editor.textView.text, "X\nX")
-        XCTAssertEqual(editor.currentSelections().count, 2)
+        // 重做后光标必须落在两段恢复的文本之后，而不是因为撤销范围错位而重叠。
+        XCTAssertEqual(
+            editor.currentSelections(),
+            [
+                NSRange(location: 1, length: 0),
+                NSRange(location: 3, length: 0),
+            ]
+        )
     }
 
     func testTypingTwiceKeepsMultipleCarets() throws {
@@ -126,6 +133,50 @@ final class EditorIntegrationTests: XCTestCase {
         spinMainRunLoop()
         XCTAssertEqual(editor.textView.text, "abc\ndef")
         XCTAssertEqual(editor.currentSelections().count, 2)
+    }
+
+    func testSixtyCursorsKeepSelectionsAcrossConsecutiveInput() throws {
+        let lineCount = 60
+        let lines = (1...lineCount).map { "Line \($0)" }
+        let text = lines.joined(separator: "\n")
+        var selections: [NSRange] = []
+        var location = 0
+        for line in lines {
+            selections.append(NSRange(location: location, length: 0))
+            location += (line as NSString).length + 1
+        }
+
+        let editor = EditorViewController(
+            document: makeDocument(),
+            text: text,
+            selections: selections
+        )
+        let undo = try XCTUnwrap(editor.textView.undoManager)
+        undo.groupsByEvent = false
+
+        performInsertion("X", in: editor, undo: undo)
+        XCTAssertEqual(editor.currentSelections().count, lineCount)
+
+        performInsertion("Y", in: editor, undo: undo)
+        XCTAssertEqual(editor.currentSelections().count, lineCount)
+        XCTAssertEqual(
+            editor.textView.text?.components(separatedBy: "\n").count,
+            lineCount
+        )
+
+        // 两次输入各成一个撤销组，需要撤销两次才能回到初始文本。
+        undo.undo()
+        spinMainRunLoop()
+        XCTAssertEqual(editor.currentSelections().count, lineCount)
+        XCTAssertEqual(
+            editor.textView.text,
+            lines.map { "X" + $0 }.joined(separator: "\n")
+        )
+
+        undo.undo()
+        spinMainRunLoop()
+        XCTAssertEqual(editor.textView.text, text)
+        XCTAssertEqual(editor.currentSelections().count, lineCount)
     }
 
     func testBackspaceDeletesAtEveryCaretAndUndoRestores() throws {

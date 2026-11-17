@@ -16,7 +16,10 @@ concurrency:
 jobs:
   build-and-test:
     name: Build and test (Apple silicon)
-    runs-on: macos-26
+    # macos-15 是 public 仓库可用的 arm64 标准 runner；
+    # macos-26 仍是 public preview，容量/排队不稳定。
+    # 镜像默认 Xcode 为 16.4，下面会显式选择已安装的 Xcode 26.x。
+    runs-on: macos-15
     timeout-minutes: 45
 
     steps:
@@ -141,37 +144,84 @@ jobs:
           print(f"LSMinimumSystemVersion: {version}")
           PY
 
+          APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST")"
+          APP_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST")"
+          test "$APP_VERSION" = "1.0.2"
+          test "$APP_BUILD" = "3"
+          if [[ "$GITHUB_REF_NAME" != "v1.0.2" && "$GITHUB_REF_NAME" != v1.0.2-* ]]; then
+            echo "tag $GITHUB_REF_NAME 与 app 版本 $APP_VERSION 不一致" >&2
+            exit 1
+          fi
+
+          echo "Version: $APP_VERSION ($APP_BUILD)"
           echo "Architecture: $ARCHS"
           echo "Signature:"
           codesign -dv --verbose=4 "$APP" 2>&1
           echo "Gatekeeper assessment (informational; ad-hoc is not notarized):"
           spctl --assess --type execute --verbose=4 "$APP" 2>&1 || true
 
-      - name: Package ZIP
+      - name: Package DMG
         shell: bash
         run: |
           set -euo pipefail
           APP="build/Build/Products/Release/Linea.app"
-          rm -f Linea.zip
-          ditto -c -k --sequesterRsrc --keepParent "$APP" Linea.zip
+          VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
+          DMG="Linea-${VERSION}-macos-arm64.dmg"
+          STAGE="$(mktemp -d)"
+          MOUNT_ROOT="$(mktemp -d)"
+          MOUNT="$MOUNT_ROOT/Linea"
+          mkdir -p "$MOUNT"
+          trap 'hdiutil detach "$MOUNT" -force >/dev/null 2>&1 || true; rm -rf "$STAGE" "$MOUNT_ROOT"' EXIT
 
-          EXTRACT_ROOT="$(mktemp -d)"
-          ditto -x -k Linea.zip "$EXTRACT_ROOT"
-          test -x "$EXTRACT_ROOT/Linea.app/Contents/MacOS/Linea"
-          test -s "$EXTRACT_ROOT/Linea.app/Contents/Resources/Assets.car"
-          test -d "$EXTRACT_ROOT/Linea.app/Contents/_CodeSignature"
-          test "$(lipo -archs "$EXTRACT_ROOT/Linea.app/Contents/MacOS/Linea")" = "arm64"
-          # 确认 ad-hoc 签名在 ZIP 打包和解压后仍然完整
-          codesign --verify --deep --strict --verbose=2 "$EXTRACT_ROOT/Linea.app"
-          rm -rf "$EXTRACT_ROOT"
+          # staging 目录只放 App 和 /Applications 符号链接，用户挂载后可直接拖拽安装。
+          ditto "$APP" "$STAGE/Linea.app"
+          ln -s /Applications "$STAGE/Applications"
 
-          ls -lh Linea.zip
+          # HFS+ 兼容更广；若新版 runner 不再支持创建，则回退 APFS。
+          if ! hdiutil create \
+            -volname "Linea ${VERSION}" \
+            -srcfolder "$STAGE" \
+            -ov -format UDZO -fs HFS+ \
+            "$DMG"; then
+            echo "HFS+ DMG 创建失败，回退 APFS" >&2
+            rm -f "$DMG"
+            hdiutil create \
+              -volname "Linea ${VERSION}" \
+              -srcfolder "$STAGE" \
+              -ov -format UDZO -fs APFS \
+              "$DMG"
+          fi
+          hdiutil verify "$DMG"
 
-      - name: Upload app ZIP
+          hdiutil attach -nobrowse -noautoopen -readonly -mountpoint "$MOUNT" "$DMG"
+          test -d "$MOUNT/Linea.app"
+          test -L "$MOUNT/Applications"
+          test "$(readlink "$MOUNT/Applications")" = "/Applications"
+          test -x "$MOUNT/Linea.app/Contents/MacOS/Linea"
+          test -s "$MOUNT/Linea.app/Contents/Resources/Assets.car"
+          test -d "$MOUNT/Linea.app/Contents/_CodeSignature"
+          codesign --verify --deep --strict --verbose=2 "$MOUNT/Linea.app"
+          test "$(lipo -archs "$MOUNT/Linea.app/Contents/MacOS/Linea")" = "arm64"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$MOUNT/Linea.app/Contents/Info.plist")" = "$VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$MOUNT/Linea.app/Contents/Info.plist")" = "3"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$MOUNT/Linea.app/Contents/Info.plist")" = "14.0"
+          # ad-hoc 签名未公证，spctl 预期拒绝，仅记录便于排查。
+          spctl --assess --type execute --verbose=4 "$MOUNT/Linea.app" 2>&1 || true
+
+          hdiutil detach "$MOUNT"
+          rm -rf "$MOUNT_ROOT"
+          shasum -a 256 "$DMG" > "$DMG.sha256"
+          shasum -a 256 -c "$DMG.sha256"
+
+          ls -lh "$DMG" "$DMG.sha256"
+
+      - name: Upload app DMG
         uses: actions/upload-artifact@v7
         with:
-          name: Linea-macos-arm64-adhoc-signed
-          path: Linea.zip
+          name: Linea-macos-arm64-adhoc-signed-dmg
+          path: |
+            Linea-*.dmg
+            Linea-*.dmg.sha256
           if-no-files-found: error
           retention-days: 7
 

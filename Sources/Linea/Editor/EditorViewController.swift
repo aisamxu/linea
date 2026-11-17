@@ -19,12 +19,20 @@ final class EditorViewController: NSViewController, STTextViewDelegate {
     private var isApplyingText = false
     private var pendingScrollOrigin: CGPoint?
 
+    /// 把大段文本变化后的布局合并到下一轮事件循环，避免每个 range 都强制重排。
+    private var viewportReflowScheduled = false
+    private var viewportReflowGeneration = 0
+    private var pendingViewportAnchor: NSRange?
+
     /// 退出写会话期间临时关闭编辑能力，防止快照之后的新修改丢失。
     private(set) var isEditingEnabled = true
 
     /// 一次多光标文本替换的期望选区；STTextView 替换后只保留一个选区，需要自行恢复。
     private var activeCursorAdjustment: MultiCursorSelectionAdjuster?
     private var cursorRestoreScheduled = false
+    private var isFlushingCursorRestore = false
+    /// 输入法组合期间仍逐 range 同步写回，避免异步恢复打断 marked text。
+    private var usesSynchronousCursorRestore = false
 
     /// 只在视图已加载时暴露给事件监视器，避免提前触发 loadView。
     var textViewIfViewLoaded: STTextView? {
@@ -95,11 +103,15 @@ final class EditorViewController: NSViewController, STTextViewDelegate {
     override func viewDidAppear() {
         super.viewDidAppear()
         applyPendingScrollIfNeeded()
+        // 首次显示只补齐当前可见区域的 fragment，不强行滚动到光标；
+        // 会话恢复的滚动位置由 pendingScrollOrigin 负责。
+        scheduleViewportReflow(anchor: nil)
     }
 
     /// 窗口/标签真正显示后调用：应用延迟滚动并抢占焦点。
     func prepareForDisplay(focus: Bool = true) {
         applyPendingScrollIfNeeded()
+        scheduleViewportReflow(anchor: nil)
         if focus {
             focusEditor()
         }
@@ -164,6 +176,7 @@ final class EditorViewController: NSViewController, STTextViewDelegate {
 
     private func installInitialText(_ text: String, selections: [NSRange]) {
         activeCursorAdjustment = nil
+        usesSynchronousCursorRestore = false
         isApplyingText = true
         textView.text = text
         TextSelectionBridge.setRanges(selections, in: textView)
@@ -216,8 +229,8 @@ final class EditorViewController: NSViewController, STTextViewDelegate {
         return menu
     }
 
-    /// TextKit 每次替换后会折叠多选区。这里在替换前维护每个光标的期望位置，
-    /// 并在 `didChangeTextIn` 中立即写回，保证连续键入仍作用在所有光标上。
+    /// TextKit 每次替换后会折叠多选区。替换前维护每个光标的期望位置，
+    /// 整个多 range 替换结束后只写回一次，避免 k 个 range × k 个选区的 O(k²) 开销。
     func textView(
         _ textView: STTextView,
         willChangeTextIn affectedCharRange: NSTextRange,
@@ -233,6 +246,8 @@ final class EditorViewController: NSViewController, STTextViewDelegate {
             let selections = TextSelectionBridge.ranges(in: textView)
             guard selections.count > 1 else { return }
             activeCursorAdjustment = MultiCursorSelectionAdjuster(ranges: selections)
+            // 中文等输入法组合期间继续走同步路径，保持现有 marked text 行为。
+            usesSynchronousCursorRestore = textView.hasMarkedText()
             scheduleCursorRestore()
         }
 
@@ -249,15 +264,26 @@ final class EditorViewController: NSViewController, STTextViewDelegate {
         replacementString: String
     ) {
         guard !isApplyingText,
-              let contentManager = textView.textLayoutManager.textContentManager,
-              var adjuster = activeCursorAdjustment
+              let contentManager = textView.textLayoutManager.textContentManager
         else {
             return
         }
 
-        adjuster.clamp(to: contentManager.length)
-        activeCursorAdjustment = adjuster
-        TextSelectionBridge.setRanges(adjuster.ranges, in: textView)
+        // 普通键入/删除只在整次替换结束后恢复一次；IME 组合期间保留逐 range 同步写回。
+        if usesSynchronousCursorRestore, var adjuster = activeCursorAdjustment {
+            adjuster.clamp(to: contentManager.length)
+            activeCursorAdjustment = adjuster
+            TextSelectionBridge.setRanges(adjuster.ranges, in: textView)
+        }
+
+        // 大段粘贴后 STTextView 只在滚动前布局；这里合并调度一次异步补布局，
+        // 让滚动后新露出的尾部区域也生成 layout fragment。
+        let editRange = NSRange(affectedCharRange, in: contentManager)
+        let replacementLength = (replacementString as NSString).length
+        let containsNewline = replacementString.contains("\n") || replacementString.contains("\r")
+        if containsNewline || replacementLength >= 256 || editRange.length >= 256 {
+            scheduleViewportReflow(anchor: activeCursorAdjustment?.ranges.last)
+        }
     }
 
     private func scheduleCursorRestore() {
@@ -270,9 +296,45 @@ final class EditorViewController: NSViewController, STTextViewDelegate {
             self.cursorRestoreScheduled = false
             guard let adjuster = self.activeCursorAdjustment else { return }
             self.activeCursorAdjustment = nil
-            guard !self.isApplyingText else { return }
-            TextSelectionBridge.setRanges(adjuster.ranges, in: self.textView)
+
+            if self.usesSynchronousCursorRestore {
+                self.usesSynchronousCursorRestore = false
+                self.scheduleViewportReflow(anchor: adjuster.ranges.last)
+                return
+            }
+            self.restoreCursor(adjuster)
         }
+    }
+
+    /// 在一次按键/粘贴的整个替换结束后写回全部多光标选区。
+    private func restoreCursor(_ adjuster: MultiCursorSelectionAdjuster) {
+        guard !isApplyingText,
+              let contentManager = textView.textLayoutManager.textContentManager
+        else {
+            return
+        }
+
+        var adjuster = adjuster
+        adjuster.clamp(to: contentManager.length)
+        TextSelectionBridge.setRanges(adjuster.ranges, in: textView)
+        scheduleViewportReflow(anchor: adjuster.ranges.last)
+    }
+
+    /// 命令或会话快照读取选区前，先把尚未执行的异步恢复同步完成。
+    private func flushPendingCursorRestore() {
+        guard !isFlushingCursorRestore,
+              !isApplyingText,
+              let adjuster = activeCursorAdjustment
+        else {
+            return
+        }
+
+        isFlushingCursorRestore = true
+        defer { isFlushingCursorRestore = false }
+
+        activeCursorAdjustment = nil
+        usesSynchronousCursorRestore = false
+        restoreCursor(adjuster)
     }
 
     // MARK: - 文本与快照
@@ -290,6 +352,7 @@ final class EditorViewController: NSViewController, STTextViewDelegate {
         }
 
         activeCursorAdjustment = nil
+        usesSynchronousCursorRestore = false
         textView.allowsUndo = false
         // 查找栏里的 Replace 会绕过普通插入路径，退出期间直接收起。
         textView.textFinder.performAction(.hideFindInterface)
@@ -298,10 +361,13 @@ final class EditorViewController: NSViewController, STTextViewDelegate {
     }
 
     func replaceTextFromDisk(_ newText: String) {
+        // 异步恢复尚未执行时先同步完成，避免重载后丢失多光标。
+        flushPendingCursorRestore()
         let origin = currentScrollOrigin
         let selections = TextSelectionBridge.ranges(in: textView)
 
         activeCursorAdjustment = nil
+        usesSynchronousCursorRestore = false
         isApplyingText = true
         textView.text = newText
         TextSelectionBridge.setRanges(selections, in: textView)
@@ -315,7 +381,8 @@ final class EditorViewController: NSViewController, STTextViewDelegate {
     }
 
     func currentSelections() -> [NSRange] {
-        TextSelectionBridge.ranges(in: textView)
+        flushPendingCursorRestore()
+        return TextSelectionBridge.ranges(in: textView)
     }
 
     var currentScrollOrigin: CGPoint {
@@ -329,10 +396,17 @@ final class EditorViewController: NSViewController, STTextViewDelegate {
     private func applyPendingScrollIfNeeded(attempt: Int = 0) {
         guard let target = pendingScrollOrigin, view.window != nil else { return }
 
+        // 先让 STTextView 自己跑完一轮 layout，再读取文档高度。
+        textView.needsLayout = true
         scrollView.layoutSubtreeIfNeeded()
+
         let clipView = scrollView.contentView
         let visibleSize = clipView.bounds.size
-        let contentSize = textView.frame.size
+        let usageSize = textView.textLayoutManager.usageBoundsForTextContainer
+        let contentSize = CGSize(
+            width: max(textView.frame.width, usageSize.width),
+            height: max(textView.frame.height, usageSize.height)
+        )
 
         // 大文档首次布局可能尚未完成，此时立即 scroll 会被 AppKit clamp 到 0；
         // 最多等待约 0.6 秒再放弃，避免无限重试。
@@ -345,7 +419,6 @@ final class EditorViewController: NSViewController, STTextViewDelegate {
             return
         }
 
-        pendingScrollOrigin = nil
         let maxX = max(0, contentSize.width - visibleSize.width)
         let maxY = max(0, contentSize.height - visibleSize.height)
         let origin = CGPoint(
@@ -354,6 +427,84 @@ final class EditorViewController: NSViewController, STTextViewDelegate {
         )
         clipView.scroll(to: origin)
         scrollView.reflectScrolledClipView(clipView)
+
+        // AppKit 可能因为文档尚未完全长高而把 origin clamp 回较小值。
+        let actualOrigin = clipView.bounds.origin
+        let reachedTarget = abs(actualOrigin.x - origin.x) <= 1
+            && abs(actualOrigin.y - origin.y) <= 1
+        if !reachedTarget, attempt < 12 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                self?.applyPendingScrollIfNeeded(attempt: attempt + 1)
+            }
+            return
+        }
+
+        pendingScrollOrigin = nil
+        scheduleViewportReflow(anchor: nil)
+    }
+
+    /// 把滚动、选区恢复后可能缺失的 viewport 布局合并到一次异步补排。
+    private func scheduleViewportReflow(anchor: NSRange?) {
+        guard view.window != nil else { return }
+
+        viewportReflowGeneration += 1
+        // nil 表示只补排当前可见区域；显式覆盖旧 anchor，避免恢复滚动时被过期光标拉走。
+        pendingViewportAnchor = anchor
+        guard !viewportReflowScheduled else { return }
+
+        viewportReflowScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            self?.performViewportReflow()
+        }
+    }
+
+    private func performViewportReflow() {
+        viewportReflowScheduled = false
+        guard view.window != nil else {
+            pendingViewportAnchor = nil
+            return
+        }
+
+        let anchor = pendingViewportAnchor
+        pendingViewportAnchor = nil
+        let generation = viewportReflowGeneration
+
+        // 第一轮执行 STTextView 挂起的 postLayoutAction（滚动到光标）；
+        // 第二轮才按滚动后的可见区域生成新露出的 fragment views。
+        textView.needsLayout = true
+        scrollView.layoutSubtreeIfNeeded()
+
+        if let anchor, !isRangeVisible(anchor) {
+            textView.scrollRangeToVisible(anchor)
+        }
+
+        textView.needsLayout = true
+        scrollView.layoutSubtreeIfNeeded()
+
+        // 补排期间若有新编辑，允许再合并一轮，直到最后一次编辑后的状态稳定。
+        if generation != viewportReflowGeneration, !viewportReflowScheduled {
+            scheduleViewportReflow(anchor: pendingViewportAnchor)
+        }
+    }
+
+    private func isRangeVisible(_ range: NSRange) -> Bool {
+        guard let contentManager = textView.textLayoutManager.textContentManager else {
+            return false
+        }
+
+        // 零宽光标在文档末尾时，取前一个字符的片段来判断所在行是否可见。
+        let probeRange = range.length == 0 && range.location > 0
+            ? NSRange(location: range.location - 1, length: 1)
+            : range
+        guard let textRange = NSTextRange(probeRange, in: contentManager),
+              let frame = textView.textLayoutManager.textSegmentFrame(
+                  in: textRange,
+                  type: .standard
+              )
+        else {
+            return false
+        }
+        return scrollView.documentVisibleRect.intersects(frame)
     }
 
     // MARK: - 查找替换
@@ -395,9 +546,7 @@ final class EditorViewController: NSViewController, STTextViewDelegate {
         guard case let .updated(ranges) = result else { return result }
 
         TextSelectionBridge.setRanges(ranges, in: textView)
-        if let lastRange = ranges.last {
-            textView.scrollRangeToVisible(lastRange)
-        }
+        scheduleViewportReflow(anchor: ranges.last)
         view.window?.makeFirstResponder(textView)
         return result
     }
@@ -409,7 +558,7 @@ final class EditorViewController: NSViewController, STTextViewDelegate {
         guard ranges.count > 1, let lastRange = ranges.last else { return false }
 
         TextSelectionBridge.setRanges([lastRange], in: textView)
-        textView.scrollRangeToVisible(lastRange)
+        scheduleViewportReflow(anchor: lastRange)
         return true
     }
 
@@ -470,7 +619,7 @@ final class EditorViewController: NSViewController, STTextViewDelegate {
         }
 
         TextSelectionBridge.setRanges(ranges, in: textView)
-        textView.scrollRangeToVisible(NSRange(location: offset, length: 0))
+        scheduleViewportReflow(anchor: NSRange(location: offset, length: 0))
         window.makeFirstResponder(textView)
         return true
     }

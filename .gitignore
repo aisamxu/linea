@@ -15,6 +15,9 @@ xcuserdata/
 # 打包与压缩产物
 Linea.zip
 *.zip
+*.dmg
+*.dmg.sha256
+*.sha256
 
 # macOS 系统文件
 .DS_Store
