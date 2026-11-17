@@ -133,6 +133,24 @@ footprint 需要在 Phase 5 用完整 App 实测。
 Debug 测试只保留数量级护栏（单/60 光标 < 300 ms、500 光标 < 2 s、
 10 万行 + 500 光标 insert/undo < 5 s），不作为性能结论。
 
+## LineaTextUI Phase 4 输入法（2026-11-17）
+
+### 测量条件
+
+- 机器同上；`swift test -c release --package-path Packages/LineaTextUI --filter LineaTextViewPerformance`
+- 1 万行文档，光标位于第 4000 行附近；模拟拼音逐键更新，marked text 从 1 个字符增长到 10 个字符
+- 每次 `setMarkedText` 后绘制一帧 900×600 可见区域，包含组合虚拟行、下划线与组合光标
+- 性能测试位于 `LineaTextViewPerformanceTests.inputMethodUpdateAndDrawWithinFrameBudget`
+
+### 实测
+
+| 场景 | 实测 | Phase 4 目标 |
+| --- | ---: | ---: |
+| 输入法逐键更新 + 重绘（10 次平均） | 1.67 ms/次 | < 16 ms |
+
+组合渲染不改 buffer，每帧只临时拼接「行前缀 + marked text + 行后缀」并排版一行；
+绘制路径只多画 marked text、下划线和组合光标，不触碰其他行。
+
 ## 1.1.0 目标（Phase 5 验收）
 
 本机 Release，900×600，中位数（best-of-5）：

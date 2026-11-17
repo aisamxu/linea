@@ -184,6 +184,39 @@ struct LineaTextViewPerformanceTests {
         #endif
     }
 
+    @Test func inputMethodUpdateAndDrawWithinFrameBudget() {
+        let text = String(repeating: "line\n", count: 9_999) + "line"
+        let view = makeView(text, selections: [.caret(at: 20_000)])
+        guard let context = makeBitmapContext() else {
+            Issue.record("无法创建绘制 context")
+            return
+        }
+        drawVisibleFrame(view, context)
+
+        // 模拟拼音逐键更新：每次 setMarkedText 后重绘一帧。
+        let updates = 10
+        let start = CFAbsoluteTimeGetCurrent()
+        for step in 1...updates {
+            let marked = String(repeating: "に", count: step)
+            view.setMarkedText(
+                marked,
+                selectedRange: NSRange(location: step, length: 0),
+                replacementRange: NSRange(location: NSNotFound, length: 0)
+            )
+            drawVisibleFrame(view, context)
+        }
+        let perUpdate = (CFAbsoluteTimeGetCurrent() - start) * 1000 / Double(updates)
+        print("[LineaTextUI] 输入法逐键更新 + 重绘: \(perUpdate) ms/次")
+        #expect(view.hasMarkedText())
+        #expect(view.engine.text.utf16.count == text.utf16.count)
+
+        #if DEBUG
+        #expect(perUpdate < 300)
+        #else
+        #expect(perUpdate < 16)
+        #endif
+    }
+
     @Test func hundredThousandLinesWithFiveHundredSparseCursors() {
         let text = String(repeating: "line\n", count: 99_999) + "line"
         let carets = (0..<500).map {
